@@ -12,7 +12,8 @@
     "build": "vite build",
     "dist": "npm run build && electron-builder --win nsis",
     "publish:github": "npm run build && electron-builder --win nsis --publish always",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test tests/*.test.cjs"
   },
   "build": {
     "appId": "com.reststop.app",
