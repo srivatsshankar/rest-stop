@@ -375,26 +375,47 @@ button:disabled {
   height: 42px;
   width: 42px;
   place-items: center;
+  border: 1px solid rgb(29 37 44 / 14%);
   border-radius: 0.375rem;
-  background: #1d252c;
-  color: white;
+  background: #fbfaf7;
+  color: #1d252c;
   font-weight: 600;
-  transition: transform 120ms ease, background-color 120ms ease;
+  transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .new-menu-button:hover,
 .new-menu-button:focus-visible {
-  background: #245247;
+  border-color: rgb(36 82 71 / 28%);
+  background: #d8edf2;
+  color: #1d252c;
   transform: translateY(-1px);
 }
 
+.new-menu-button[aria-pressed="true"],
+.new-menu-button[aria-expanded="true"] {
+  border-color: transparent;
+  background: #245247;
+  color: white;
+}
+
+.new-menu-button[aria-pressed="true"]:hover,
+.new-menu-button[aria-pressed="true"]:focus-visible,
+.new-menu-button[aria-expanded="true"]:hover,
+.new-menu-button[aria-expanded="true"]:focus-visible {
+  background: #1e463d;
+  color: white;
+}
+
 .new-menu-button.active {
+  border-color: transparent;
   background: #db6b53;
+  color: white;
 }
 
 .new-menu-button.active:hover,
 .new-menu-button.active:focus-visible {
   background: #c85f49;
+  color: white;
 }
 
 .top-menu-actions {
@@ -591,6 +612,46 @@ button:disabled {
 
 [data-theme="dark"] .menu-item.danger {
   color: #f2a08d;
+}
+
+[data-theme="dark"] .new-menu-button {
+  border-color: rgb(221 226 226 / 16%);
+  background: #20292c;
+  color: #f4f1ea;
+}
+
+[data-theme="dark"] .new-menu-button:hover,
+[data-theme="dark"] .new-menu-button:focus-visible {
+  border-color: rgb(143 195 181 / 32%);
+  background: #284149;
+  color: #f4f1ea;
+}
+
+[data-theme="dark"] .new-menu-button[aria-pressed="true"],
+[data-theme="dark"] .new-menu-button[aria-expanded="true"] {
+  border-color: transparent;
+  background: #8fc3b5;
+  color: #101415;
+}
+
+[data-theme="dark"] .new-menu-button[aria-pressed="true"]:hover,
+[data-theme="dark"] .new-menu-button[aria-pressed="true"]:focus-visible,
+[data-theme="dark"] .new-menu-button[aria-expanded="true"]:hover,
+[data-theme="dark"] .new-menu-button[aria-expanded="true"]:focus-visible {
+  background: #a8d5c9;
+  color: #101415;
+}
+
+[data-theme="dark"] .new-menu-button.active {
+  border-color: transparent;
+  background: #db6b53;
+  color: white;
+}
+
+[data-theme="dark"] .new-menu-button.active:hover,
+[data-theme="dark"] .new-menu-button.active:focus-visible {
+  background: #c85f49;
+  color: white;
 }
 
 [data-theme="dark"] .step {

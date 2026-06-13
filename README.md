@@ -7,8 +7,12 @@ Simple restic backups.
 </p>
 
 <p align="center">
-[![Tests](https://github.com/srivatsshankar/rest-stop/actions/workflows/tests.yml/badge.svg)](https://github.com/srivatsshankar/rest-stop/actions/workflows/tests.yml)
-[![Downloads](https://img.shields.io/github/downloads/srivatsshankar/rest-stop/total?label=downloads)](https://github.com/srivatsshankar/rest-stop/releases)
+  <a href="https://github.com/srivatsshankar/rest-stop/actions/workflows/tests.yml"><img src="https://github.com/srivatsshankar/rest-stop/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/srivatsshankar/rest-stop/releases"><img src="https://img.shields.io/github/downloads/srivatsshankar/rest-stop/total?label=downloads" alt="Downloads"></a>
+</p>
+
+<p align="center">
+  <img src="docs/previews/app-preview.png" alt="Rest Stop application preview">
 </p>
 
 Rest Stop is a lightweight desktop app for creating, managing, and restoring restic backups without using the command line.
@@ -50,6 +54,12 @@ Shows the application settings, including tool checks, appearance, and update pr
 
 ![Settings menu preview](docs/previews/settings-menu.png)
 
+### Light Mode
+
+Shows the main interface using the light appearance mode for brighter desktop environments.
+
+![Light mode preview](docs/previews/light-mode.png)
+
 ### Collapsible Menu
 
 Shows the collapsible menu providing details of each backup.
@@ -61,7 +71,7 @@ Shows the collapsible menu providing details of each backup.
 Shows the taskbar status indicator used to reflect idle, running, and failed backup or restore activity. The application is minimized to the taskbar.
 
 <p align="center">
-![Taskbar preview](docs/previews/taskbar.png)
+  <img src="docs/previews/taskbar.png" alt="Taskbar preview">
 </p>
 
 ## Development

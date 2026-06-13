@@ -26,5 +26,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install restic
+        run: choco install restic --yes --no-progress
+
       - name: Run tests
         run: npm test
