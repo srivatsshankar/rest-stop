@@ -1,0 +1,111 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+out/
+target/
+bin/
+obj/
+
+# Cache directories
+.cache/
+.tmp/
+temp/
+tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Node / JavaScript / TypeScript
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+.nuxt/
+coverage/
+
+# C / C++ / compiled files
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+*.a
+*.lib
+
+# Java / JVM
+*.class
+.gradle/
+.m2/
+
+# Rust
+target/
+
+# Go
+*.test
+
+# Databases / local data
+*.sqlite
+*.sqlite3
+*.db
+*.duckdb
+
+# Large/generated data files
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.arrow
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Secrets / keys
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx

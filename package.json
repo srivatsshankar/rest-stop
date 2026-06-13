@@ -1,0 +1,64 @@
+{
+  "name": "reststop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A lightweight Electron GUI for restic backups.",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "icons": "node scripts/generate-app-icons.cjs",
+    "predev": "node scripts/generate-app-icons.cjs",
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 node scripts/start-electron.cjs .\"",
+    "prebuild": "node scripts/generate-app-icons.cjs",
+    "build": "vite build",
+    "dist": "npm run build && electron-builder --win nsis",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "build": {
+    "appId": "com.reststop.app",
+    "productName": "Rest Stop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "public/app-icon/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "public/app-icon/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Rest Stop"
+    }
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-svg-core": "^6.7.2",
+    "@fortawesome/free-solid-svg-icons": "^6.7.2",
+    "@fortawesome/react-fontawesome": "^3.1.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^42.3.3",
+    "postcss": "^8.4.49",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^3.4.17",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.7.2"
+  }
+}

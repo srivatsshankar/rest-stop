@@ -1,0 +1,33 @@
+const { contextBridge, ipcRenderer } = require("electron");
+
+contextBridge.exposeInMainWorld("reststop", {
+  ensureRestic: () => ipcRenderer.invoke("restic:ensure"),
+  ensureRclone: () => ipcRenderer.invoke("rclone:ensure"),
+  getProfiles: () => ipcRenderer.invoke("profiles:list"),
+  saveProfile: (profile) => ipcRenderer.invoke("profiles:save", profile),
+  deleteProfile: (options) => ipcRenderer.invoke("profiles:delete", options),
+  setProfileSchedulePaused: (options) => ipcRenderer.invoke("profiles:set-schedule-paused", options),
+  chooseBackupSources: () => ipcRenderer.invoke("dialog:backup-sources"),
+  chooseDirectory: () => ipcRenderer.invoke("dialog:directory"),
+  getHomeDirectory: () => ipcRenderer.invoke("fs:home"),
+  getRoots: () => ipcRenderer.invoke("fs:roots"),
+  listDirectory: (dirPath) => ipcRenderer.invoke("fs:list", dirPath),
+  openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
+  analyzeBackupLocation: (targetPath) => ipcRenderer.invoke("backup:analyze-location", targetPath),
+  getBackupStatus: () => ipcRenderer.invoke("backup:get-status"),
+  startBackup: (profile, password) => ipcRenderer.invoke("backup:start", profile, password),
+  stopBackup: (profileId) => ipcRenderer.invoke("backup:stop", profileId),
+  getStoredPassword: (profileId) => ipcRenderer.invoke("backup:get-stored-password", profileId),
+  savePassword: (profileId, password) => ipcRenderer.invoke("backup:save-password", profileId, password),
+  connectRcloneAccount: (options) => ipcRenderer.invoke("rclone:connect-account", options),
+  setupRcloneRepository: (options) => ipcRenderer.invoke("rclone:setup-repository", options),
+  listRcloneDirectory: (options) => ipcRenderer.invoke("rclone:list-directory", options),
+  createRcloneDirectory: (options) => ipcRenderer.invoke("rclone:create-directory", options),
+  listRestoreSnapshots: (options) => ipcRenderer.invoke("restore:list-snapshots", options),
+  listRestoreFiles: (options) => ipcRenderer.invoke("restore:list-files", options),
+  startRestore: (options) => ipcRenderer.invoke("restore:start", options),
+  setTaskbarStatus: (status) => ipcRenderer.invoke("taskbar:set-status", status),
+  minimizeWindow: () => ipcRenderer.invoke("window:minimize"),
+  toggleMaximizeWindow: () => ipcRenderer.invoke("window:toggle-maximize"),
+  closeWindow: () => ipcRenderer.invoke("window:close")
+});
