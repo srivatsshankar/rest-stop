@@ -1,17 +1,13 @@
-<p align="center">
-  <img src="public/app-icon/icon.png" alt="Rest Stop application icon" width="112" height="112">
-</p>
-
 # Rest Stop
 
 Simple restic backups.
 
+<p align="center">
+  <img src="public/app-icon/icon.png" alt="Rest Stop application icon" width="112" height="112">
+</p>
+
 [![Tests](https://github.com/srivatsshankar/rest-stop/actions/workflows/tests.yml/badge.svg)](https://github.com/srivatsshankar/rest-stop/actions/workflows/tests.yml)
 [![Downloads](https://img.shields.io/github/downloads/srivatsshankar/rest-stop/total?label=downloads)](https://github.com/srivatsshankar/rest-stop/releases)
-
-<p align="center">
-  <img src="docs/app-preview.png" alt="Rest Stop application preview">
-</p>
 
 Rest Stop is a lightweight desktop app for creating, managing, and restoring restic backups without using the command line.
 
@@ -26,13 +22,43 @@ Rest Stop is a lightweight desktop app for creating, managing, and restoring res
 - Start automatically when the installed app launches at login.
 - Show backup and restore activity in the taskbar and system tray.
 - Surface backup and restore failures with persistent error details.
-- Generate Windows and macOS app icon formats from a single PNG source.
-- Build a Windows NSIS installer that supports updating existing installs.
-- Check GitHub Releases for updates, download them automatically, and install them when no backup or restore is active.
+
 
 ## Downloads
 
 Download the installer that applies to your system from the [Rest Stop releases page](https://github.com/srivatsshankar/rest-stop/releases).
+
+## Previews
+
+### Backup Creation
+
+Shows the guided flow for creating a new restic backup profile.
+
+![Backup creation preview](docs/previews/backup-creation.png)
+
+### Restoration Example
+
+Shows the restore workflow for selecting a backup and restoring files.
+
+![Restoration example preview](docs/previews/restoration-example.png)
+
+### Settings Menu
+
+Shows the application settings, including tool checks, appearance, and update preferences.
+
+![Settings menu preview](docs/previews/settings-menu.png)
+
+### Collapsible Menu
+
+Shows the collapsible menu providing details of each backup.
+
+![Collapsible menu preview](docs/previews/dropdown.png)
+
+### Taskbar
+
+Shows the taskbar status indicator used to reflect idle, running, and failed backup or restore activity. The application is minimized to the taskbar.
+
+![Taskbar preview](docs/previews/taskbar.png)
 
 ## Development
 

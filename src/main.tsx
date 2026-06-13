@@ -223,6 +223,8 @@ type ReststopBridge = {
   listRestoreSnapshots: (options: { repository: BackupProfile["repository"]; password: string }) => Promise<ResticSnapshot[]>;
   listRestoreFiles: (options: { repository: BackupProfile["repository"]; password: string; snapshotId: string; path?: string }) => Promise<DirectoryListing>;
   startRestore: (options: RestoreStartOptions) => Promise<{ message: string }>;
+  getAutoUpdatesEnabled: () => Promise<boolean>;
+  setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
   setTaskbarStatus: (status: TaskbarStatus) => Promise<void>;
   minimizeWindow: () => Promise<void>;
   toggleMaximizeWindow: () => Promise<void>;
@@ -305,6 +307,8 @@ const fallbackBridge: ReststopBridge = {
   startRestore: async () => {
     throw new Error("Run inside Electron to restore files.");
   },
+  getAutoUpdatesEnabled: async () => true,
+  setAutoUpdatesEnabled: async (enabled) => enabled,
   setTaskbarStatus: async () => undefined,
   minimizeWindow: async () => undefined,
   toggleMaximizeWindow: async () => undefined,
@@ -530,6 +534,7 @@ function App() {
   const [restoreRuns, setRestoreRuns] = useState<RestoreRun[]>([]);
   const [versionCounts, setVersionCounts] = useState<Record<string, BackupVersionCount>>({});
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
+  const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     const stored = localStorage.getItem("reststop-theme");
     return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
@@ -546,6 +551,7 @@ function App() {
     runResticCheck();
     runRcloneCheck();
     refreshBackupStatus();
+    bridge.getAutoUpdatesEnabled().then(setAutoUpdatesEnabledState).catch(() => setAutoUpdatesEnabledState(true));
   }, []);
 
   useEffect(() => {
@@ -666,6 +672,15 @@ function App() {
       setRclone(await bridge.ensureRclone());
     } finally {
       setRcloneChecking(false);
+    }
+  }
+
+  async function handleAutoUpdatesChange(enabled: boolean) {
+    setAutoUpdatesEnabledState(enabled);
+    try {
+      setAutoUpdatesEnabledState(await bridge.setAutoUpdatesEnabled(enabled));
+    } catch {
+      setAutoUpdatesEnabledState((current) => !current);
     }
   }
 
@@ -989,9 +1004,11 @@ function App() {
               rclone={rclone}
               rcloneChecking={rcloneChecking}
               themeMode={themeMode}
+              autoUpdatesEnabled={autoUpdatesEnabled}
               onCheckRestic={runResticCheck}
               onCheckRclone={runRcloneCheck}
               onThemeChange={setThemeMode}
+              onAutoUpdatesChange={handleAutoUpdatesChange}
             />
           ) : null}
           {view === "backup" ? (
@@ -1082,18 +1099,22 @@ function SettingsView({
   rclone,
   rcloneChecking,
   themeMode,
+  autoUpdatesEnabled,
   onCheckRestic,
   onCheckRclone,
-  onThemeChange
+  onThemeChange,
+  onAutoUpdatesChange
 }: {
   restic: ResticStatus;
   resticChecking: boolean;
   rclone: ToolStatus;
   rcloneChecking: boolean;
   themeMode: ThemeMode;
+  autoUpdatesEnabled: boolean;
   onCheckRestic: () => void;
   onCheckRclone: () => void;
   onThemeChange: (mode: ThemeMode) => void;
+  onAutoUpdatesChange: (enabled: boolean) => void;
 }) {
   return (
     <section className="settings-view rounded-md border border-ink/10 bg-white p-5 shadow-sm">
@@ -1125,6 +1146,19 @@ function SettingsView({
             </button>
           </div>
         </div>
+      </section>
+
+      <section className="settings-section updates-section">
+        <p className="settings-label">Updates</p>
+        <label className="settings-toggle">
+          <span>Automatically Install Updates</span>
+          <input
+            checked={autoUpdatesEnabled}
+            onChange={(event) => onAutoUpdatesChange(event.target.checked)}
+            type="checkbox"
+          />
+          <span aria-hidden="true" className="settings-toggle-control" />
+        </label>
       </section>
 
       <section className="settings-section appearance-section">

@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("reststop", {
   listRestoreSnapshots: (options) => ipcRenderer.invoke("restore:list-snapshots", options),
   listRestoreFiles: (options) => ipcRenderer.invoke("restore:list-files", options),
   startRestore: (options) => ipcRenderer.invoke("restore:start", options),
+  getAutoUpdatesEnabled: () => ipcRenderer.invoke("updates:get-auto-enabled"),
+  setAutoUpdatesEnabled: (enabled) => ipcRenderer.invoke("updates:set-auto-enabled", enabled),
   setTaskbarStatus: (status) => ipcRenderer.invoke("taskbar:set-status", status),
   minimizeWindow: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximizeWindow: () => ipcRenderer.invoke("window:toggle-maximize"),

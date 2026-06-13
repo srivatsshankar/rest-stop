@@ -15,6 +15,7 @@ let currentTaskbarStatus = "paused";
 let isQuitting = false;
 let updateReadyToInstall = false;
 let updateInstallTimer = null;
+let updaterConfigured = false;
 let activeRestoreRunCount = 0;
 const BACKGROUND_LAUNCH_ARG = "--reststop-background";
 const activeBackupRuns = new Map();
@@ -191,20 +192,32 @@ function configureAutoLaunch() {
 
 function configureAutoUpdater() {
   if (!app.isPackaged) return;
+  if (!updaterConfigured) {
+    autoUpdater.logger = log;
+    log.transports.file.level = "info";
+    autoUpdater.autoInstallOnAppQuit = false;
 
-  autoUpdater.logger = log;
-  log.transports.file.level = "info";
+    autoUpdater.on("update-downloaded", () => {
+      updateReadyToInstall = true;
+      installPendingUpdateWhenIdle();
+    });
+    autoUpdater.on("error", (error) => {
+      log.error("Auto-update failed", error);
+    });
+    updaterConfigured = true;
+  }
+
+  if (!getAutoUpdatesEnabled()) {
+    stopAutoUpdateChecks();
+    return;
+  }
+
+  startAutoUpdateChecks();
+}
+
+function startAutoUpdateChecks() {
+  if (updateInstallTimer) return;
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = false;
-
-  autoUpdater.on("update-downloaded", () => {
-    updateReadyToInstall = true;
-    installPendingUpdateWhenIdle();
-  });
-  autoUpdater.on("error", (error) => {
-    log.error("Auto-update failed", error);
-  });
-
   autoUpdater.checkForUpdatesAndNotify().catch((error) => {
     log.error("Auto-update check failed", error);
   });
@@ -215,8 +228,17 @@ function configureAutoUpdater() {
   if (typeof updateInstallTimer.unref === "function") updateInstallTimer.unref();
 }
 
+function stopAutoUpdateChecks() {
+  if (updateInstallTimer) {
+    clearInterval(updateInstallTimer);
+    updateInstallTimer = null;
+  }
+  autoUpdater.autoDownload = false;
+  updateReadyToInstall = false;
+}
+
 function installPendingUpdateWhenIdle() {
-  if (!updateReadyToInstall || backupOrRestoreIsActive()) return;
+  if (!getAutoUpdatesEnabled() || !updateReadyToInstall || backupOrRestoreIsActive()) return;
   updateReadyToInstall = false;
   isQuitting = true;
   autoUpdater.quitAndInstall(false, true);
@@ -258,6 +280,8 @@ function registerIpc() {
   ipcMain.handle("restore:list-snapshots", (_event, options) => listRestoreSnapshots(options));
   ipcMain.handle("restore:list-files", (_event, options) => listRestoreFiles(options));
   ipcMain.handle("restore:start", (_event, options) => startRestore(options));
+  ipcMain.handle("updates:get-auto-enabled", () => getAutoUpdatesEnabled());
+  ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
   ipcMain.handle("taskbar:set-status", (_event, status) => updateTaskbarStatus(status));
   ipcMain.handle("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.handle("window:toggle-maximize", (event) => {
@@ -1046,6 +1070,39 @@ function findRcloneExecutable(startDir) {
 
 function profilesPath() {
   return path.join(app.getPath("userData"), "profiles.json");
+}
+
+function settingsPath() {
+  return path.join(app.getPath("userData"), "settings.json");
+}
+
+function readSettings() {
+  try {
+    if (!fs.existsSync(settingsPath())) return {};
+    return JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeSettings(settings) {
+  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+  fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
+}
+
+function getAutoUpdatesEnabled() {
+  return readSettings().autoUpdatesEnabled !== false;
+}
+
+function setAutoUpdatesEnabled(enabled) {
+  const autoUpdatesEnabled = Boolean(enabled);
+  writeSettings({
+    ...readSettings(),
+    autoUpdatesEnabled
+  });
+  if (autoUpdatesEnabled) configureAutoUpdater();
+  else stopAutoUpdateChecks();
+  return autoUpdatesEnabled;
 }
 
 function sanitizeProfileForRenderer(profile) {
