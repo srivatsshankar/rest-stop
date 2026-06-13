@@ -34,7 +34,7 @@ Rest Stop is a lightweight desktop app for creating, managing, and restoring res
 
 Download the installer that applies to your system from the [Rest Stop releases page](https://github.com/srivatsshankar/rest-stop/releases).
 
-> Note: Rest Stop is currently available on **Windows**. __Linux and MacOS versions are under development.__
+> Note: Rest Stop is currently available on **Windows**. _Linux and MacOS versions are under development._
 
 ## Previews
 
