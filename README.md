@@ -34,6 +34,8 @@ Rest Stop is a lightweight desktop app for creating, managing, and restoring res
 
 Download the installer that applies to your system from the [Rest Stop releases page](https://github.com/srivatsshankar/rest-stop/releases).
 
+> Note: Rest Stop is currently available on Windows. Linux and MacOS versions are under development.
+
 ## Previews
 
 ### Backup Creation
@@ -120,4 +122,4 @@ Use the version in `package.json`, commit the release, then run:
 release-github.bat
 ```
 
-The script pushes a `vX.Y.Z` tag, which triggers GitHub Actions to publish the Windows installer and update metadata.
+The script pushes a `vX.Y.Z` tag, which triggers GitHub Actions to publish the Windows installer, update metadata, and generate release notes listing new features, fixes, and maintenance changes.
