@@ -6,11 +6,16 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
+const log = require("electron-log");
+const { autoUpdater } = require("electron-updater");
 
 let mainWindow;
 let tray;
 let currentTaskbarStatus = "paused";
 let isQuitting = false;
+let updateReadyToInstall = false;
+let updateInstallTimer = null;
+let activeRestoreRunCount = 0;
 const BACKGROUND_LAUNCH_ARG = "--reststop-background";
 const activeBackupRuns = new Map();
 let cachedRestic = null;
@@ -129,6 +134,7 @@ app.whenReady().then(() => {
   registerIpc();
   createTray();
   createWindow();
+  configureAutoUpdater();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: true });
@@ -181,6 +187,43 @@ function configureAutoLaunch() {
     settings.openAsHidden = true;
   }
   app.setLoginItemSettings(settings);
+}
+
+function configureAutoUpdater() {
+  if (!app.isPackaged) return;
+
+  autoUpdater.logger = log;
+  log.transports.file.level = "info";
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = false;
+
+  autoUpdater.on("update-downloaded", () => {
+    updateReadyToInstall = true;
+    installPendingUpdateWhenIdle();
+  });
+  autoUpdater.on("error", (error) => {
+    log.error("Auto-update failed", error);
+  });
+
+  autoUpdater.checkForUpdatesAndNotify().catch((error) => {
+    log.error("Auto-update check failed", error);
+  });
+  updateInstallTimer = setInterval(() => {
+    if (updateReadyToInstall) installPendingUpdateWhenIdle();
+    else autoUpdater.checkForUpdates().catch((error) => log.error("Auto-update check failed", error));
+  }, 6 * 60 * 60 * 1000);
+  if (typeof updateInstallTimer.unref === "function") updateInstallTimer.unref();
+}
+
+function installPendingUpdateWhenIdle() {
+  if (!updateReadyToInstall || backupOrRestoreIsActive()) return;
+  updateReadyToInstall = false;
+  isQuitting = true;
+  autoUpdater.quitAndInstall(false, true);
+}
+
+function backupOrRestoreIsActive() {
+  return activeRestoreRunCount > 0 || [...activeBackupRuns.values()].some((state) => state?.running);
 }
 
 function isBackgroundLaunch() {
@@ -1259,6 +1302,16 @@ async function restoreSnapshotNodes(repository, password, snapshotId) {
 }
 
 async function startRestore(options) {
+  activeRestoreRunCount += 1;
+  try {
+    return await runRestore(options);
+  } finally {
+    activeRestoreRunCount = Math.max(0, activeRestoreRunCount - 1);
+    installPendingUpdateWhenIdle();
+  }
+}
+
+async function runRestore(options) {
   const repository = normalizeRestoreRepository(options?.repository);
   const password = String(options?.password ?? "");
   const snapshotId = String(options?.snapshotId ?? "").trim();
@@ -1526,6 +1579,7 @@ async function startBackup(profile, password) {
         percentComplete: null,
         progressLabel: "Backup stopped."
       });
+      installPendingUpdateWhenIdle();
       return getBackupStatus();
     }
 
@@ -1550,6 +1604,7 @@ async function startBackup(profile, password) {
       progressLabel: runState.stopRequested ? "Backup stopped." : error instanceof Error ? error.message : String(error),
       errorDetails: runState.stopRequested ? null : backupErrorDetails(error)
     });
+    installPendingUpdateWhenIdle();
     if (runState.stopRequested) return getBackupStatus();
     throw error;
   }
@@ -1580,6 +1635,7 @@ async function startBackup(profile, password) {
       progressLabel: runState.stopRequested ? "Backup stopped." : error instanceof Error ? error.message : String(error),
       errorDetails: runState.stopRequested ? null : backupErrorDetails(error)
     });
+    installPendingUpdateWhenIdle();
   });
 
   child.on("close", (code) => {
@@ -1605,6 +1661,7 @@ async function startBackup(profile, password) {
         : failureMessage,
       errorDetails: runState.stopRequested || code === 0 ? null : backupErrorDetails(failureMessage)
     });
+    installPendingUpdateWhenIdle();
   });
 
   return getBackupStatus();
@@ -1635,6 +1692,7 @@ function scheduleNetworkBackupRetry(profile, password, reason, currentState = {}
     progressLabel: `Waiting for network location. Retrying at ${retryAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`,
     errorDetails: null
   });
+  installPendingUpdateWhenIdle();
 }
 
 async function retryNetworkBackup(profileId) {
@@ -1672,6 +1730,7 @@ async function retryNetworkBackup(profileId) {
       stopRequested: false,
       stderr: ""
     });
+    installPendingUpdateWhenIdle();
   }
 }
 
@@ -1756,6 +1815,7 @@ async function stopBackup(profileId) {
       errorDetails: null,
       retryTimer: null
     });
+    installPendingUpdateWhenIdle();
     return getBackupStatus();
   }
   if (runState?.running) {
@@ -1784,6 +1844,7 @@ async function stopBackup(profileId) {
         stopRequested: true,
         stderr: ""
       });
+      installPendingUpdateWhenIdle();
     }
   }
 

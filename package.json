@@ -1,8 +1,8 @@
 {
   "name": "reststop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "A lightweight Electron GUI for restic backups.",
+  "description": "Simple restic backups.",
   "main": "electron/main.cjs",
   "scripts": {
     "icons": "node scripts/generate-app-icons.cjs",
@@ -11,6 +11,7 @@
     "prebuild": "node scripts/generate-app-icons.cjs",
     "build": "vite build",
     "dist": "npm run build && electron-builder --win nsis",
+    "publish:github": "npm run build && electron-builder --win nsis --publish always",
     "preview": "vite preview --host 127.0.0.1"
   },
   "build": {
@@ -19,6 +20,13 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "srivatsshankar",
+        "repo": "rest-stop"
+      }
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -47,6 +55,8 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.9",
     "postcss": "^8.4.49",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
