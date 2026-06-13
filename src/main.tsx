@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faArrowLeft,
+  faArrowDown,
   faArrowRight,
   faArrowUp,
   faBoxArchive,
@@ -96,6 +97,7 @@ type BackupProfile = {
   excludes: string;
   schedule: BackupSchedule;
   schedulePaused?: boolean;
+  reviewRequired?: boolean;
   retention: RetentionPolicy;
   lastBackupStartedAt?: string;
   lastBackupCompletedAt?: string;
@@ -225,6 +227,8 @@ type ReststopBridge = {
   startRestore: (options: RestoreStartOptions) => Promise<{ message: string }>;
   getAutoUpdatesEnabled: () => Promise<boolean>;
   setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
+  exportConfig: () => Promise<{ cancelled: boolean; path?: string }>;
+  restoreConfig: () => Promise<{ cancelled: boolean; path?: string; profiles?: BackupProfile[]; settings?: { autoUpdatesEnabled?: boolean } }>;
   setTaskbarStatus: (status: TaskbarStatus) => Promise<void>;
   minimizeWindow: () => Promise<void>;
   toggleMaximizeWindow: () => Promise<void>;
@@ -309,6 +313,8 @@ const fallbackBridge: ReststopBridge = {
   },
   getAutoUpdatesEnabled: async () => true,
   setAutoUpdatesEnabled: async (enabled) => enabled,
+  exportConfig: async () => ({ cancelled: true }),
+  restoreConfig: async () => ({ cancelled: true }),
   setTaskbarStatus: async () => undefined,
   minimizeWindow: async () => undefined,
   toggleMaximizeWindow: async () => undefined,
@@ -535,6 +541,7 @@ function App() {
   const [versionCounts, setVersionCounts] = useState<Record<string, BackupVersionCount>>({});
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
   const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
+  const [configMessage, setConfigMessage] = useState("");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     const stored = localStorage.getItem("reststop-theme");
     return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
@@ -681,6 +688,31 @@ function App() {
       setAutoUpdatesEnabledState(await bridge.setAutoUpdatesEnabled(enabled));
     } catch {
       setAutoUpdatesEnabledState((current) => !current);
+    }
+  }
+
+  async function handleExportConfig() {
+    setConfigMessage("");
+    try {
+      const result = await bridge.exportConfig();
+      if (!result.cancelled) setConfigMessage(`Config saved to ${result.path}.`);
+    } catch (error) {
+      setConfigMessage(error instanceof Error ? error.message : "Unable to save the config file.");
+    }
+  }
+
+  async function handleRestoreConfig() {
+    setConfigMessage("");
+    try {
+      const result = await bridge.restoreConfig();
+      if (result.cancelled) return;
+      setProfiles(result.profiles ?? []);
+      setVersionCounts({});
+      setExpandedProfileId(null);
+      setAutoUpdatesEnabledState(result.settings?.autoUpdatesEnabled !== false);
+      setConfigMessage(`Config restored from ${result.path}. All backups are paused. Review and save each backup before running it.`);
+    } catch (error) {
+      setConfigMessage(error instanceof Error ? error.message : "Unable to restore the config file.");
     }
   }
 
@@ -997,54 +1029,59 @@ function App() {
             </div>
           </div>
 
-          {view === "settings" ? (
-            <SettingsView
-              restic={restic}
-              resticChecking={resticChecking}
-              rclone={rclone}
-              rcloneChecking={rcloneChecking}
-              themeMode={themeMode}
-              autoUpdatesEnabled={autoUpdatesEnabled}
-              onCheckRestic={runResticCheck}
-              onCheckRclone={runRcloneCheck}
-              onThemeChange={setThemeMode}
-              onAutoUpdatesChange={handleAutoUpdatesChange}
-            />
-          ) : null}
-          {view === "backup" ? (
-            <BackupWizard
-              key={editingProfile?.id ?? "new"}
-              initialProfile={editingProfile}
-              onCancel={goBack}
-              onSave={handleSave}
-            />
-          ) : null}
-          {view === "restore" ? <RestoreFlow profiles={profiles} onCancel={goBack} onStartRestore={startRestoreRun} /> : null}
-          {view === "home" ? (
-            <div className="grid gap-4">
-              <RestoreActivityPanel
-                runs={restoreRuns}
-                onDismiss={(runId) => setRestoreRuns((current) => current.filter((run) => run.id !== runId))}
+          <ViewErrorBoundary key={view} view={view}>
+            {view === "settings" ? (
+              <SettingsView
+                restic={restic}
+                resticChecking={resticChecking}
+                rclone={rclone}
+                rcloneChecking={rcloneChecking}
+                themeMode={themeMode}
+                autoUpdatesEnabled={autoUpdatesEnabled}
+                configMessage={configMessage}
+                onCheckRestic={runResticCheck}
+                onCheckRclone={runRcloneCheck}
+                onThemeChange={setThemeMode}
+                onAutoUpdatesChange={handleAutoUpdatesChange}
+                onExportConfig={handleExportConfig}
+                onRestoreConfig={handleRestoreConfig}
               />
-              {profiles.length === 0 ? (
-                <EmptyState onCreate={openCreateBackup} onRestore={() => navigateTo("restore")} />
-              ) : (
-                <BackupList
-                  profiles={profiles}
-                  backupStatus={backupStatus}
-                  versionCounts={versionCounts}
-                  globalSchedulePaused={globalSchedulePaused}
-                  expandedProfileId={expandedProfileId}
-                  onToggle={(profileId) => setExpandedProfileId((current) => current === profileId ? null : profileId)}
-                  onEdit={openEditBackup}
-                  onStart={startBackup}
-                  onStop={handleStopBackup}
-                  onPause={handlePauseProfile}
-                  onDelete={openDeleteBackup}
+            ) : null}
+            {view === "backup" ? (
+              <BackupWizard
+                key={editingProfile?.id ?? "new"}
+                initialProfile={editingProfile}
+                onCancel={goBack}
+                onSave={handleSave}
+              />
+            ) : null}
+            {view === "restore" ? <RestoreFlow profiles={profiles} onCancel={goBack} onStartRestore={startRestoreRun} /> : null}
+            {view === "home" ? (
+              <div className="grid gap-4">
+                <RestoreActivityPanel
+                  runs={restoreRuns}
+                  onDismiss={(runId) => setRestoreRuns((current) => current.filter((run) => run.id !== runId))}
                 />
-              )}
-            </div>
-          ) : null}
+                {profiles.length === 0 ? (
+                  <EmptyState onCreate={openCreateBackup} onRestore={() => navigateTo("restore")} />
+                ) : (
+                  <BackupList
+                    profiles={profiles}
+                    backupStatus={backupStatus}
+                    versionCounts={versionCounts}
+                    globalSchedulePaused={globalSchedulePaused}
+                    expandedProfileId={expandedProfileId}
+                    onToggle={(profileId) => setExpandedProfileId((current) => current === profileId ? null : profileId)}
+                    onEdit={openEditBackup}
+                    onStart={startBackup}
+                    onStop={handleStopBackup}
+                    onPause={handlePauseProfile}
+                    onDelete={openDeleteBackup}
+                  />
+                )}
+              </div>
+            ) : null}
+          </ViewErrorBoundary>
         </div>
       </div>
       <footer className="app-footer drag-region">Rest Stop // {profiles.length} {profiles.length === 1 ? "backup" : "backups"}</footer>
@@ -1093,6 +1130,39 @@ function backupErrorDetails(error: unknown, fallback: string): BackupRunStatus["
   };
 }
 
+class ViewErrorBoundary extends React.Component<
+  { children: React.ReactNode; view: AppView },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error(`Unable to render ${this.props.view} view`, error);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <section className="view-error-panel">
+        <p className="backup-error-eyebrow">View unavailable</p>
+        <h2>{viewLabel(this.props.view)} could not be displayed</h2>
+        <p>{this.state.error.message || "An unexpected rendering error occurred."}</p>
+      </section>
+    );
+  }
+}
+
+function viewLabel(view: AppView) {
+  if (view === "backup") return "Backup setup";
+  if (view === "restore") return "Restore";
+  if (view === "settings") return "Settings";
+  return "Home";
+}
+
 function SettingsView({
   restic,
   resticChecking,
@@ -1100,10 +1170,13 @@ function SettingsView({
   rcloneChecking,
   themeMode,
   autoUpdatesEnabled,
+  configMessage,
   onCheckRestic,
   onCheckRclone,
   onThemeChange,
-  onAutoUpdatesChange
+  onAutoUpdatesChange,
+  onExportConfig,
+  onRestoreConfig
 }: {
   restic: ResticStatus;
   resticChecking: boolean;
@@ -1111,10 +1184,13 @@ function SettingsView({
   rcloneChecking: boolean;
   themeMode: ThemeMode;
   autoUpdatesEnabled: boolean;
+  configMessage: string;
   onCheckRestic: () => void;
   onCheckRclone: () => void;
   onThemeChange: (mode: ThemeMode) => void;
   onAutoUpdatesChange: (enabled: boolean) => void;
+  onExportConfig: () => void;
+  onRestoreConfig: () => void;
 }) {
   return (
     <section className="settings-view rounded-md border border-ink/10 bg-white p-5 shadow-sm">
@@ -1125,7 +1201,7 @@ function SettingsView({
       <section className="settings-section">
         <p className="settings-label">Restic</p>
         <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-row items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <span className={`status-dot ${restic.installed ? "bg-pine" : "bg-brass"}`} />
               <p className="text-sm font-semibold">{resticChecking ? "Checking or installing restic" : restic.installed ? "restic is installed" : "restic is not installed"}</p>
@@ -1174,6 +1250,27 @@ function SettingsView({
             <FontAwesomeIcon icon={faDesktop} /> System
           </button>
         </div>
+      </section>
+
+      <section className="settings-section config-section">
+        <p className="settings-label">Config</p>
+        <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <span className="status-dot bg-pine" />
+              <p className="text-sm font-semibold">Configuration File</p>
+            </div>
+            <div className="config-actions">
+              <button className="small-button justify-center" onClick={onExportConfig}>
+                <FontAwesomeIcon icon={faArrowDown} /> Download
+              </button>
+              <button className="small-button justify-center" onClick={onRestoreConfig}>
+                <FontAwesomeIcon icon={faArrowUp} /> Restore
+              </button>
+            </div>
+          </div>
+        </div>
+        {configMessage ? <p className="setup-status">{configMessage}</p> : null}
       </section>
     </section>
   );
@@ -1301,6 +1398,7 @@ function BackupList({
         const backupError = profileHasStatus ? backupStatus.errorDetails : null;
         const isProfileSchedulePaused = profile.schedule.mode === "recurring" && Boolean(profile.schedulePaused);
         const isSchedulePaused = profile.schedule.mode === "recurring" && (globalSchedulePaused || Boolean(profile.schedulePaused));
+        const reviewRequired = Boolean(profile.reviewRequired);
         const versionCount = versionCounts[profile.id] ?? { status: "loading" };
         const statusLabel = isProfileRunning
           ? "Running"
@@ -1308,6 +1406,8 @@ function BackupList({
             ? "Failed"
           : isProfileWaiting
             ? "Waiting for network"
+          : reviewRequired
+            ? "Review required"
           : backupStatus.running
             ? "Another backup is running"
             : globalSchedulePaused && profile.schedule.mode === "recurring"
@@ -1326,7 +1426,7 @@ function BackupList({
                 <FontAwesomeIcon className="backup-expand-icon" icon={expanded ? faChevronDown : faChevronRight} />
                 <span className="min-w-0">
                   <span className="backup-card-name">{profile.name}</span>
-                  <span className="backup-card-next">Next run: {formatNextRun(profile, globalSchedulePaused)}</span>
+                  <span className="backup-card-next">{reviewRequired ? "Review this backup before running it" : `Next run: ${formatNextRun(profile, globalSchedulePaused)}`}</span>
                 </span>
               </button>
               <div className="backup-card-actions">
@@ -1337,10 +1437,10 @@ function BackupList({
                 <button className="icon-button small tooltip-button" aria-label={`Edit ${profile.name}`} data-tooltip="Edit backup" onClick={() => onEdit(profile)}>
                   <FontAwesomeIcon icon={faPen} />
                 </button>
-                <button className={`icon-button small tooltip-button ${profile.schedulePaused ? "active" : ""}`} aria-label={`${pauseLabel} for ${profile.name}`} aria-pressed={Boolean(profile.schedulePaused)} data-tooltip={pauseLabel} onClick={() => onPause(profile, !profile.schedulePaused)}>
+                <button className={`icon-button small tooltip-button ${profile.schedulePaused ? "active" : ""}`} aria-label={`${pauseLabel} for ${profile.name}`} aria-pressed={Boolean(profile.schedulePaused)} data-tooltip={reviewRequired ? "Review backup first" : pauseLabel} disabled={reviewRequired} onClick={() => onPause(profile, !profile.schedulePaused)}>
                   <FontAwesomeIcon icon={profile.schedulePaused ? faPlay : faPause} />
                 </button>
-                <button className="icon-button small tooltip-button" aria-label={`Run ${profile.name}`} data-tooltip="Run backup" disabled={isProfileActive} onClick={() => onStart(profile)}>
+                <button className="icon-button small tooltip-button" aria-label={`Run ${profile.name}`} data-tooltip={reviewRequired ? "Review backup first" : "Run backup"} disabled={isProfileActive || reviewRequired} onClick={() => onStart(profile)}>
                   <FontAwesomeIcon icon={faRepeat} />
                 </button>
               </div>
@@ -1359,6 +1459,7 @@ function BackupList({
                 />
                 <BackupProgress status={backupStatus} isProfileRunning={profileHasStatus} />
                 {backupError ? <BackupErrorDetails details={backupError} /> : null}
+                {reviewRequired ? <BackupReviewNotice /> : null}
                 <div className="backup-detail-actions">
                   <button className="danger-button justify-center" disabled={isProfileRunning} onClick={() => onDelete(profile)}>
                     <FontAwesomeIcon icon={faTrashCan} /> Delete
@@ -1369,10 +1470,10 @@ function BackupList({
                   <button className="secondary-button justify-center" onClick={() => onEdit(profile)}>
                     <FontAwesomeIcon icon={faPen} /> Edit
                   </button>
-                  <button className="secondary-button justify-center" onClick={() => onPause(profile, !profile.schedulePaused)}>
+                  <button className="secondary-button justify-center" disabled={reviewRequired} onClick={() => onPause(profile, !profile.schedulePaused)}>
                     <FontAwesomeIcon icon={profile.schedulePaused ? faPlay : faPause} /> {profile.schedulePaused ? "Resume" : "Pause"}
                   </button>
-                  <button className="primary-button justify-center" disabled={isProfileActive} onClick={() => onStart(profile)}>
+                  <button className="primary-button justify-center" disabled={isProfileActive || reviewRequired} onClick={() => onStart(profile)}>
                     <FontAwesomeIcon icon={faRepeat} /> Run
                   </button>
                 </div>
@@ -1472,6 +1573,16 @@ function BackupErrorDetails({ details }: { details: NonNullable<BackupRunStatus[
   );
 }
 
+function BackupReviewNotice() {
+  return (
+    <section className="backup-review-notice">
+      <p className="backup-error-eyebrow">Review required</p>
+      <h3>Confirm this backup before running it</h3>
+      <p>This backup was restored from a config file and has been paused. Edit and save it after checking the source folders, backup location, schedule, and retention settings.</p>
+    </section>
+  );
+}
+
 function isBackupWaitingForNetwork(status: BackupRunStatus) {
   return !status.running && /^Waiting for network location/i.test(status.progressLabel);
 }
@@ -1519,7 +1630,7 @@ function getNextRunDate(createdAt: string, schedule: BackupSchedule) {
 }
 
 function isScheduledBackupDue(profile: BackupProfile, now = new Date()) {
-  if (profile.schedule.mode !== "recurring" || profile.schedulePaused) return false;
+  if (profile.schedule.mode !== "recurring" || profile.schedulePaused || profile.reviewRequired) return false;
   const dueRun = getLatestDueRunDate(profile.createdAt, profile.schedule, now);
   if (!dueRun) return false;
   const lastStarted = parseStoredDate(profile.lastBackupStartedAt);
@@ -1658,6 +1769,7 @@ function normalizeProfile(profile: BackupProfile): BackupProfile {
     ...profile,
     schedule: normalizeSchedule(profile.schedule),
     schedulePaused: Boolean(profile.schedulePaused),
+    reviewRequired: Boolean(profile.reviewRequired),
     retention: normalizeRetention(profile.retention)
   };
 }

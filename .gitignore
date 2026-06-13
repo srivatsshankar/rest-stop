@@ -38,6 +38,7 @@ public/app-icon/icon.icns
 
 # Cache directories
 .cache/
+.dev-data/
 .tmp/
 temp/
 tmp/

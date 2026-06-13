@@ -29,6 +29,6 @@ if not defined INSTALLER (
   exit /b 1
 )
 
-echo Running %INSTALLER%...
-start /wait "" "%INSTALLER%"
-exit /b %ERRORLEVEL%
+echo Installer created:
+echo %CD%\%INSTALLER%
+exit /b 0

@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld("reststop", {
   startRestore: (options) => ipcRenderer.invoke("restore:start", options),
   getAutoUpdatesEnabled: () => ipcRenderer.invoke("updates:get-auto-enabled"),
   setAutoUpdatesEnabled: (enabled) => ipcRenderer.invoke("updates:set-auto-enabled", enabled),
+  exportConfig: () => ipcRenderer.invoke("config:export"),
+  restoreConfig: () => ipcRenderer.invoke("config:restore"),
   setTaskbarStatus: (status) => ipcRenderer.invoke("taskbar:set-status", status),
   minimizeWindow: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximizeWindow: () => ipcRenderer.invoke("window:toggle-maximize"),

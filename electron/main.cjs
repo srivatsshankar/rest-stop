@@ -9,6 +9,14 @@ const zlib = require("node:zlib");
 const log = require("electron-log");
 const { autoUpdater } = require("electron-updater");
 
+const APP_NAME = "Rest Stop";
+
+if (!app.isPackaged) {
+  const devDataPath = path.join(__dirname, "..", ".dev-data");
+  fs.mkdirSync(devDataPath, { recursive: true });
+  app.setPath("userData", devDataPath);
+}
+
 let mainWindow;
 let tray;
 let currentTaskbarStatus = "paused";
@@ -127,6 +135,7 @@ function createWindow(options = {}) {
 }
 
 app.whenReady().then(() => {
+  app.setName(APP_NAME);
   Menu.setApplicationMenu(null);
   if (process.platform === "win32") app.setAppUserModelId("com.reststop.app");
   configureAutoLaunch();
@@ -282,6 +291,8 @@ function registerIpc() {
   ipcMain.handle("restore:start", (_event, options) => startRestore(options));
   ipcMain.handle("updates:get-auto-enabled", () => getAutoUpdatesEnabled());
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
+  ipcMain.handle("config:export", exportConfig);
+  ipcMain.handle("config:restore", restoreConfig);
   ipcMain.handle("taskbar:set-status", (_event, status) => updateTaskbarStatus(status));
   ipcMain.handle("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.handle("window:toggle-maximize", (event) => {
@@ -1068,26 +1079,71 @@ function findRcloneExecutable(startDir) {
   return null;
 }
 
-function profilesPath() {
+function configPath() {
+  return path.join(app.getPath("userData"), "config.json");
+}
+
+function legacyProfilesPath() {
   return path.join(app.getPath("userData"), "profiles.json");
 }
 
-function settingsPath() {
+function legacySettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
-function readSettings() {
+function defaultConfig() {
+  return {
+    version: 1,
+    settings: {},
+    profiles: []
+  };
+}
+
+function normalizeConfig(config) {
+  return {
+    version: 1,
+    settings: config && typeof config.settings === "object" && !Array.isArray(config.settings) ? config.settings : {},
+    profiles: Array.isArray(config?.profiles) ? config.profiles : []
+  };
+}
+
+function readJsonFile(filePath, fallback) {
   try {
-    if (!fs.existsSync(settingsPath())) return {};
-    return JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch {
-    return {};
+    return fallback;
   }
 }
 
+function readConfig() {
+  if (fs.existsSync(configPath())) return normalizeConfig(readJsonFile(configPath(), defaultConfig()));
+
+  const migrated = normalizeConfig({
+    settings: readJsonFile(legacySettingsPath(), {}),
+    profiles: readJsonFile(legacyProfilesPath(), [])
+  });
+  if (Object.keys(migrated.settings).length > 0 || migrated.profiles.length > 0) writeConfig(migrated);
+  return migrated;
+}
+
+function writeConfig(config) {
+  const normalized = normalizeConfig(config);
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+  fs.writeFileSync(configPath(), JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
+function readSettings() {
+  return readConfig().settings;
+}
+
 function writeSettings(settings) {
-  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
-  fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
+  const config = readConfig();
+  writeConfig({
+    ...config,
+    settings
+  });
 }
 
 function getAutoUpdatesEnabled() {
@@ -1103,6 +1159,47 @@ function setAutoUpdatesEnabled(enabled) {
   if (autoUpdatesEnabled) configureAutoUpdater();
   else stopAutoUpdateChecks();
   return autoUpdatesEnabled;
+}
+
+async function exportConfig() {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Save Rest Stop config",
+    defaultPath: "config.json",
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+  if (result.canceled || !result.filePath) return { cancelled: true };
+
+  fs.writeFileSync(result.filePath, JSON.stringify(readConfig(), null, 2));
+  return { cancelled: false, path: result.filePath };
+}
+
+async function restoreConfig() {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Restore Rest Stop config",
+    properties: ["openFile"],
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { cancelled: true };
+
+  const restored = normalizeConfig(JSON.parse(fs.readFileSync(result.filePaths[0], "utf8")));
+  const profilesPendingReview = restored.profiles.map((profile) => ({
+    ...profile,
+    schedulePaused: true,
+    reviewRequired: true
+  }));
+  writeConfig({
+    ...restored,
+    profiles: profilesPendingReview
+  });
+  if (restored.settings.autoUpdatesEnabled === false) stopAutoUpdateChecks();
+  else configureAutoUpdater();
+
+  return {
+    cancelled: false,
+    path: result.filePaths[0],
+    settings: restored.settings,
+    profiles: profilesPendingReview.map(sanitizeProfileForRenderer)
+  };
 }
 
 function sanitizeProfileForRenderer(profile) {
@@ -1132,18 +1229,20 @@ function savePasswordToStore(profileId, password) {
       ...profiles[index],
       encryptedPassword: safeStorage.encryptString(String(password)).toString("base64")
     };
-    fs.mkdirSync(path.dirname(profilesPath()), { recursive: true });
-    fs.writeFileSync(profilesPath(), JSON.stringify(profiles, null, 2));
+    writeProfiles(profiles);
   } catch { /* non-fatal */ }
 }
 
 function listProfiles() {
-  try {
-    const raw = fs.readFileSync(profilesPath(), "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
+  return readConfig().profiles;
+}
+
+function writeProfiles(profiles) {
+  const config = readConfig();
+  writeConfig({
+    ...config,
+    profiles
+  });
 }
 
 function saveProfile(profile) {
@@ -1175,14 +1274,14 @@ function saveProfile(profile) {
     currentPassword: undefined,
     encryptedPassword,
     schedulePaused: Boolean(profile.schedulePaused ?? existing?.schedulePaused),
+    reviewRequired: false,
     lastBackupStartedAt: existing?.lastBackupStartedAt,
     lastBackupCompletedAt: existing?.lastBackupCompletedAt,
     createdAt: existing?.createdAt ?? new Date().toISOString()
   };
   if (existingIndex >= 0) profiles[existingIndex] = saved;
   else profiles.push(saved);
-  fs.mkdirSync(path.dirname(profilesPath()), { recursive: true });
-  fs.writeFileSync(profilesPath(), JSON.stringify(profiles, null, 2));
+  writeProfiles(profiles);
   return profiles.map(sanitizeProfileForRenderer);
 }
 
@@ -1212,8 +1311,7 @@ async function deleteProfile(options) {
   profiles.splice(index, 1);
   clearBackupRetry(profileId);
   activeBackupRuns.delete(profileId);
-  fs.mkdirSync(path.dirname(profilesPath()), { recursive: true });
-  fs.writeFileSync(profilesPath(), JSON.stringify(profiles, null, 2));
+  writeProfiles(profiles);
   return profiles.map(sanitizeProfileForRenderer);
 }
 
@@ -1225,13 +1323,13 @@ function setProfileSchedulePaused(options) {
   const profiles = listProfiles();
   const index = profiles.findIndex((profile) => profile.id === profileId);
   if (index < 0) return profiles.map(sanitizeProfileForRenderer);
+  if (!schedulePaused && profiles[index].reviewRequired) throw new Error("Review and save this backup before resuming it.");
 
   profiles[index] = {
     ...profiles[index],
     schedulePaused
   };
-  fs.mkdirSync(path.dirname(profilesPath()), { recursive: true });
-  fs.writeFileSync(profilesPath(), JSON.stringify(profiles, null, 2));
+  writeProfiles(profiles);
   return profiles.map(sanitizeProfileForRenderer);
 }
 
@@ -1582,6 +1680,7 @@ async function startBackup(profile, password) {
   if (!profileId) throw new Error("Choose a saved backup before running it.");
   const existingRun = activeBackupRuns.get(profileId);
   if (existingRun?.running || existingRun?.waitingForNetwork) return getBackupStatus();
+  if (profile.reviewRequired) throw new Error("Review and save this backup before running it.");
   if (!profile?.repository?.target) throw new Error("This backup does not have a repository location.");
   if (!Array.isArray(profile.sources) || profile.sources.length === 0) throw new Error("This backup does not have any sources selected.");
   let resolvedPassword = String(password ?? "");
@@ -1852,8 +1951,7 @@ function updateProfileBackupTimestamps(profileId, timestamps) {
     ...profiles[index],
     ...timestamps
   };
-  fs.mkdirSync(path.dirname(profilesPath()), { recursive: true });
-  fs.writeFileSync(profilesPath(), JSON.stringify(profiles, null, 2));
+  writeProfiles(profiles);
 }
 
 async function stopBackup(profileId) {

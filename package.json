@@ -2,6 +2,7 @@
   "name": "reststop",
   "version": "1.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Simple restic backups.",
   "main": "electron/main.cjs",
   "scripts": {
@@ -9,7 +10,8 @@
     "predev": "node scripts/generate-app-icons.cjs",
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 node scripts/start-electron.cjs .\"",
     "prebuild": "node scripts/generate-app-icons.cjs",
-    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
     "dist": "npm run build && electron-builder --win nsis",
     "publish:github": "npm run build && electron-builder --win nsis --publish always",
     "preview": "vite preview --host 127.0.0.1",
@@ -36,6 +38,7 @@
     ],
     "win": {
       "target": "nsis",
+      "executableName": "Rest Stop",
       "icon": "public/app-icon/icon.ico"
     },
     "nsis": {
