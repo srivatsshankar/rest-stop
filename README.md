@@ -12,7 +12,7 @@ Simple restic backups.
 </p>
 
 <p align="center">
-  <img src="docs/previews/app-preview.png" alt="Rest Stop application preview">
+  <img src="docs/app-preview.png" alt="Rest Stop application preview">
 </p>
 
 Rest Stop is a lightweight desktop app for creating, managing, and restoring restic backups without using the command line.
