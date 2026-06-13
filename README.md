@@ -56,7 +56,7 @@ Shows the application settings, including tool checks, appearance, and update pr
 
 ### Light Mode
 
-Shows the main interface using the light appearance mode for brighter desktop environments.
+Shows the application light mode.
 
 ![Light mode preview](docs/previews/light-mode.png)
 
