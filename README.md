@@ -30,7 +30,13 @@ Rest Stop is a lightweight desktop app for creating, managing, and restoring res
 - Build a Windows NSIS installer that supports updating existing installs.
 - Check GitHub Releases for updates, download them automatically, and install them when no backup or restore is active.
 
+## Downloads
+
+Download the installer that applies to your system from the [Rest Stop releases page](https://github.com/srivatsshankar/rest-stop/releases).
+
 ## Development
+
+### Local Setup
 
 Install dependencies:
 
@@ -56,7 +62,7 @@ Build the installer:
 npm run dist
 ```
 
-## App Icon
+### App Icon
 
 Drop a square PNG at:
 
@@ -66,7 +72,7 @@ public/app-icon/icon.png
 
 Running `npm run dev`, `npm run build`, or `npm run dist` generates the native icon formats used by the app.
 
-## Releases
+### Publishing Releases
 
 Use the version in `package.json`, commit the release, then run:
 
