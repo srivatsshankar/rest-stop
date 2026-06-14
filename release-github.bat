@@ -9,12 +9,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-where npm.cmd >nul 2>nul
-if errorlevel 1 (
-  echo npm was not found. Install Node.js, then run this script again.
-  exit /b 1
-)
-
 where gh.exe >nul 2>nul
 if errorlevel 1 (
   echo GitHub CLI was not found. Install gh, then run this script again.
@@ -82,10 +76,6 @@ if not errorlevel 1 (
   set "RELEASE_EXISTS=1"
 )
 
-echo Running a local build check...
-call npm.cmd run build
-if errorlevel 1 exit /b %ERRORLEVEL%
-
 echo Pushing %BRANCH% to origin...
 git push origin "%BRANCH%"
 if errorlevel 1 exit /b %ERRORLEVEL%
@@ -121,5 +111,5 @@ if errorlevel 1 (
 for /f "usebackq delims=" %%U in (`gh release view "%TAG%" --repo "%REPO%" --json url --jq ".url"`) do set "RELEASE_URL=%%U"
 
 echo Release %TAG% has been created: %RELEASE_URL%
-echo GitHub Actions will build and upload the Windows installer.
+echo GitHub Actions will build and upload the Windows .exe and .msi release files.
 exit /b 0

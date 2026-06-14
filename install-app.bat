@@ -18,7 +18,7 @@ call npm.cmd run dist
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 set "INSTALLER="
-for /f "delims=" %%F in ('dir /b /a-d /o-d "release\Rest Stop Setup *.exe" 2^>nul') do (
+for /f "delims=" %%F in ('dir /b /a-d /o-d "release\Rest-Stop-*-windows.exe" 2^>nul') do (
   set "INSTALLER=release\%%F"
   goto :found_installer
 )

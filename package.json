@@ -12,8 +12,7 @@
     "prebuild": "node scripts/generate-app-icons.cjs",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build",
-    "dist": "npm run build && electron-builder --win nsis",
-    "publish:github": "npm run build && electron-builder --win nsis --publish always",
+    "dist": "npm run build && electron-builder --win",
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test tests/*.test.cjs"
   },
@@ -37,11 +36,16 @@
       "package.json"
     ],
     "win": {
-      "target": "nsis",
+      "target": [
+        "nsis",
+        "msi"
+      ],
+      "artifactName": "Rest-Stop-${version}-windows.${ext}",
       "executableName": "Rest Stop",
       "icon": "public/app-icon/icon.ico"
     },
     "nsis": {
+      "artifactName": "Rest-Stop-${version}-windows.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

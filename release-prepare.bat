@@ -50,7 +50,7 @@ if not exist "%NOTES_FILE%" (
   >>"%NOTES_FILE%" echo ## Maintenance
   >>"%NOTES_FILE%" echo - 
 ) else (
-  echo Release notes already exist at %NOTES_FILE%.
+  echo Release notes already exist at %NOTES_FILE%; leaving them unchanged.
 )
 
 git rev-parse -q --verify "refs/tags/%TAG%" >nul 2>nul
