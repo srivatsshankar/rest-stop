@@ -26,7 +26,8 @@ vendor/
 # Build outputs
 dist/
 release/
-build/
+build/*
+!build/installer.nsh
 out/
 target/
 bin/
