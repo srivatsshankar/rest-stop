@@ -39,6 +39,8 @@ import {
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import "./styles.css";
 
+const APP_ICON_SRC = "app-icon/icon.png";
+
 type RepositoryType = "local" | "sftp" | "rest" | "rclone";
 type RcloneBackend = "drive" | "onedrive" | "dropbox" | "box" | "pcloud" | "yandex" | "mega" | "b2" | "s3" | "smb";
 type LocationOption = "local" | "smb-folder" | "rest" | "sftp" | `rclone:${RcloneBackend}`;
@@ -1081,7 +1083,7 @@ function App() {
           ) : null}
         </div>
         <h1 className="title-heading">
-          <img className="title-app-icon" src="/app-icon/icon.png" alt="" aria-hidden="true" />
+          <img className="title-app-icon" src={APP_ICON_SRC} alt="" aria-hidden="true" />
           <span>Rest Stop</span>
           <span className={`title-activity ${titleActivity.status}`}>{titleActivity.label}</span>
         </h1>
