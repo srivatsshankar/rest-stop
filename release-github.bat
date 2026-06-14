@@ -34,6 +34,14 @@ if not defined VERSION (
 )
 
 set "TAG=v%VERSION%"
+set "NOTES_FILE=md\releases\%TAG%.md"
+set "NOTES_GIT_FILE=md/releases/%TAG%.md"
+
+if not exist "%NOTES_FILE%" (
+  echo Release notes were not found at %NOTES_FILE%.
+  echo Run release-prepare.bat first, then fill in the release notes.
+  exit /b 1
+)
 
 for /f "usebackq delims=" %%B in (`git branch --show-current`) do set "BRANCH=%%B"
 if not defined BRANCH (
@@ -41,10 +49,14 @@ if not defined BRANCH (
   exit /b 1
 )
 
-for /f "usebackq delims=" %%S in (`git status --porcelain`) do (
-  echo The working tree has uncommitted changes.
-  echo Commit or stash them before publishing %TAG%.
-  exit /b 1
+for /f "usebackq delims=" %%S in (`git status --porcelain --untracked-files=all`) do (
+  set "STATUS_LINE=%%S"
+  set "STATUS_PATH=!STATUS_LINE:~3!"
+  if /i not "!STATUS_PATH!"=="%NOTES_GIT_FILE%" (
+    echo The working tree has uncommitted changes outside %NOTES_FILE%.
+    echo Commit or stash them before publishing %TAG%.
+    exit /b 1
+  )
 )
 
 git rev-parse -q --verify "refs/tags/%TAG%" >nul 2>nul
@@ -99,8 +111,8 @@ if errorlevel 1 exit /b %ERRORLEVEL%
 
 gh release view "%TAG%" --repo "%REPO%" >nul 2>nul
 if errorlevel 1 (
-  echo Creating GitHub release %TAG% with generated release notes...
-  gh release create "%TAG%" --repo "%REPO%" --title "Rest Stop %VERSION%" --generate-notes --verify-tag
+  echo Creating GitHub release %TAG% from %NOTES_FILE%...
+  gh release create "%TAG%" --repo "%REPO%" --title "Rest Stop %VERSION%" --notes-file "%NOTES_FILE%" --verify-tag
   if errorlevel 1 exit /b !ERRORLEVEL!
 ) else (
   echo Release %TAG% already exists on GitHub.

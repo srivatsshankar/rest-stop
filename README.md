@@ -123,10 +123,16 @@ Running `npm run dev`, `npm run build`, or `npm run dist` generates the native i
 
 ### Publishing Releases
 
-Use the version in `package.json`, commit the release, then run:
+Use the version in `package.json`, commit the release, then prepare the tag and release notes:
+
+```bat
+release-prepare.bat
+```
+
+Fill in `md/releases/vX.Y.Z.md` with the features, fixes, and maintenance notes for the release. When the notes are ready, publish the release:
 
 ```bat
 release-github.bat
 ```
 
-The script creates a `vX.Y.Z` GitHub release with generated release notes, then GitHub Actions publishes the Windows installer and updates release metadata.
+The publish script overwrites the `vX.Y.Z` tag and GitHub release if needed, uses the markdown file as the release body, then GitHub Actions uploads the Windows installer.
