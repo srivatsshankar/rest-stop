@@ -49,8 +49,9 @@ for /f "usebackq delims=" %%S in (`git status --porcelain`) do (
 
 git rev-parse -q --verify "refs/tags/%TAG%" >nul 2>nul
 if not errorlevel 1 (
-  echo Tag %TAG% already exists locally.
-  exit /b 1
+  echo Replacing existing local tag %TAG%...
+  git tag -d "%TAG%"
+  if errorlevel 1 exit /b !ERRORLEVEL!
 )
 
 git ls-remote --exit-code --tags origin "%TAG%" >nul 2>nul
