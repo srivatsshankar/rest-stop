@@ -15,6 +15,18 @@ if errorlevel 1 (
   exit /b 1
 )
 
+where gh.exe >nul 2>nul
+if errorlevel 1 (
+  echo GitHub CLI was not found. Install gh, then run this script again.
+  exit /b 1
+)
+
+gh auth status >nul 2>nul
+if errorlevel 1 (
+  echo GitHub CLI is not authenticated. Run gh auth login, then run this script again.
+  exit /b 1
+)
+
 for /f "usebackq delims=" %%V in (`powershell -NoProfile -Command "(Get-Content -Raw package.json | ConvertFrom-Json).version"`) do set "VERSION=%%V"
 if not defined VERSION (
   echo Could not read version from package.json.
@@ -47,6 +59,18 @@ if not errorlevel 1 (
   exit /b 1
 )
 
+for /f "usebackq delims=" %%R in (`gh repo view --json nameWithOwner --jq ".nameWithOwner"`) do set "REPO=%%R"
+if not defined REPO (
+  echo Could not determine the GitHub repository.
+  exit /b 1
+)
+
+gh release view "%TAG%" --repo "%REPO%" >nul 2>nul
+if not errorlevel 1 (
+  echo Release %TAG% already exists on GitHub.
+  exit /b 1
+)
+
 echo Running a local build check...
 call npm.cmd run build
 if errorlevel 1 exit /b %ERRORLEVEL%
@@ -63,5 +87,17 @@ echo Pushing release tag %TAG%...
 git push origin "%TAG%"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo Release %TAG% has been pushed. GitHub Actions will build and publish the installer.
+gh release view "%TAG%" --repo "%REPO%" >nul 2>nul
+if errorlevel 1 (
+  echo Creating GitHub release %TAG% with generated release notes...
+  gh release create "%TAG%" --repo "%REPO%" --title "Rest Stop %VERSION%" --generate-notes --verify-tag
+  if errorlevel 1 exit /b !ERRORLEVEL!
+) else (
+  echo Release %TAG% already exists on GitHub.
+)
+
+for /f "usebackq delims=" %%U in (`gh release view "%TAG%" --repo "%REPO%" --json url --jq ".url"`) do set "RELEASE_URL=%%U"
+
+echo Release %TAG% has been created: %RELEASE_URL%
+echo GitHub Actions will build and upload the Windows installer.
 exit /b 0

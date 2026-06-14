@@ -129,4 +129,4 @@ Use the version in `package.json`, commit the release, then run:
 release-github.bat
 ```
 
-The script pushes a `vX.Y.Z` tag, which triggers GitHub Actions to publish the Windows installer, update metadata, and generate release notes listing new features, fixes, and maintenance changes.
+The script creates a `vX.Y.Z` GitHub release with generated release notes, then GitHub Actions publishes the Windows installer and updates release metadata.
