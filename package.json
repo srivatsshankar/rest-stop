@@ -12,7 +12,7 @@
     "prebuild": "node scripts/generate-app-icons.cjs",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build",
-    "dist": "npm run build && electron-builder --win",
+    "dist": "npm run build && electron-builder --win --publish never",
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test tests/*.test.cjs"
   },
