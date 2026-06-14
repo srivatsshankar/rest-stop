@@ -1081,6 +1081,7 @@ function App() {
           ) : null}
         </div>
         <h1 className="title-heading">
+          <img className="title-app-icon" src="/app-icon/icon.png" alt="" aria-hidden="true" />
           <span>Rest Stop</span>
           <span className={`title-activity ${titleActivity.status}`}>{titleActivity.label}</span>
         </h1>
