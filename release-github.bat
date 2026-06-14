@@ -56,8 +56,7 @@ if not errorlevel 1 (
 
 git ls-remote --exit-code --tags origin "%TAG%" >nul 2>nul
 if not errorlevel 1 (
-  echo Tag %TAG% already exists on origin.
-  exit /b 1
+  set "REMOTE_TAG_EXISTS=1"
 )
 
 for /f "usebackq delims=" %%R in (`gh repo view --json nameWithOwner --jq ".nameWithOwner"`) do set "REPO=%%R"
@@ -85,7 +84,12 @@ git tag -a "%TAG%" -m "Release %VERSION%"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 echo Pushing release tag %TAG%...
-git push origin "%TAG%"
+if defined REMOTE_TAG_EXISTS (
+  echo Replacing existing origin tag %TAG%...
+  git push --force origin "%TAG%"
+) else (
+  git push origin "%TAG%"
+)
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 gh release view "%TAG%" --repo "%REPO%" >nul 2>nul
