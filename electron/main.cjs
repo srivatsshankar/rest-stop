@@ -17,6 +17,18 @@ if (!app.isPackaged) {
   app.setPath("userData", devDataPath);
 }
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, commandLine) => {
+    if (isBackgroundLaunchCommand(commandLine)) return;
+    if (app.isReady()) showMainWindow();
+    else app.whenReady().then(showMainWindow);
+  });
+}
+
 let mainWindow;
 let tray;
 let currentTaskbarStatus = "paused";
@@ -175,22 +187,24 @@ function createWindow(options = {}) {
   }
 }
 
-app.whenReady().then(() => {
-  app.setName(APP_NAME);
-  Menu.setApplicationMenu(null);
-  if (process.platform === "win32") app.setAppUserModelId("com.reststop.app");
-  configureAutoLaunch();
-  const dockIcon = resolveAppIconPath(["png", "icns"]);
-  if (process.platform === "darwin" && dockIcon) app.dock.setIcon(dockIcon);
-  registerIpc();
-  createTray();
-  createWindow();
-  configureAutoUpdater();
+if (gotSingleInstanceLock) {
+  app.whenReady().then(() => {
+    app.setName(APP_NAME);
+    Menu.setApplicationMenu(null);
+    if (process.platform === "win32") app.setAppUserModelId("com.reststop.app");
+    configureAutoLaunch();
+    const dockIcon = resolveAppIconPath(["png", "icns"]);
+    if (process.platform === "darwin" && dockIcon) app.dock.setIcon(dockIcon);
+    registerIpc();
+    createTray();
+    createWindow();
+    configureAutoUpdater();
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: true });
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: true });
+    });
   });
-});
+}
 
 app.on("before-quit", () => {
   isQuitting = true;
@@ -299,9 +313,13 @@ function backupOrRestoreIsActive() {
 }
 
 function isBackgroundLaunch() {
-  if (process.argv.includes(BACKGROUND_LAUNCH_ARG)) return true;
+  if (isBackgroundLaunchCommand(process.argv)) return true;
   if (process.platform !== "darwin") return false;
   return Boolean(app.getLoginItemSettings().wasOpenedAsHidden);
+}
+
+function isBackgroundLaunchCommand(commandLine) {
+  return Array.isArray(commandLine) && commandLine.includes(BACKGROUND_LAUNCH_ARG);
 }
 
 function registerIpc() {

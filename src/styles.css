@@ -1390,6 +1390,11 @@ button:disabled {
   margin-top: 1rem;
 }
 
+.backup-config-section {
+  border-top: 1px solid rgb(29 37 44 / 10%);
+  padding: 0.85rem 0;
+}
+
 .backup-version-indicator {
   display: inline-flex;
   max-width: 8.5rem;
@@ -1984,6 +1989,10 @@ button:disabled {
 }
 
 [data-theme="dark"] .backup-detail-row {
+  border-color: rgb(221 226 226 / 12%);
+}
+
+[data-theme="dark"] .backup-config-section {
   border-color: rgb(221 226 226 / 12%);
 }
 

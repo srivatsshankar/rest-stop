@@ -1750,6 +1750,21 @@ function BackupList({
                 <BackupProgress status={backupStatus} hasProfileStatus={profileHasStatus} />
                 {backupError ? <BackupErrorDetails details={backupError} /> : null}
                 {reviewRequired ? <BackupReviewNotice /> : null}
+                <section className="backup-config-section">
+                  <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="status-dot bg-pine" />
+                        <p className="text-sm font-semibold">Backup configuration</p>
+                      </div>
+                      <div className="config-actions">
+                        <button className="small-button justify-center" onClick={() => onExportConfig(profile)}>
+                          <FontAwesomeIcon icon={faArrowDown} /> Download
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
                 <div className="backup-detail-actions">
                   <button className="danger-button justify-center" disabled={isProfileRunning} onClick={() => onDelete(profile)}>
                     <FontAwesomeIcon icon={faTrashCan} /> Delete
@@ -1762,9 +1777,6 @@ function BackupList({
                   </button>
                   <button className="secondary-button justify-center" disabled={reviewRequired} onClick={() => onPause(profile, !profile.schedulePaused)}>
                     <FontAwesomeIcon icon={profile.schedulePaused ? faPlay : faPause} /> {profile.schedulePaused ? "Resume" : "Pause"}
-                  </button>
-                  <button className="secondary-button justify-center" onClick={() => onExportConfig(profile)}>
-                    <FontAwesomeIcon icon={faArrowDown} /> Download config
                   </button>
                   <button className="primary-button justify-center" disabled={isProfileActive || reviewRequired} onClick={() => onStart(profile)}>
                     <FontAwesomeIcon icon={faRepeat} /> Run
