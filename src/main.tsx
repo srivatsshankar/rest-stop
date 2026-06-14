@@ -2195,6 +2195,7 @@ function BackupWizard({
   const [rcloneSetup, setRcloneSetup] = useState<{ status: RcloneSetupStatus; message: string }>({ status: "idle", message: "" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const previousDraftNameRef = useRef(draft.name);
   const steps = ["Details", "Location", "Data", "Frequency", "Retention", "Review"];
   const selectedRcloneOption = rcloneBackendOptions.find((option) => option.value === rcloneBackend) ?? rcloneBackendOptions[0];
   const rcloneFields = rcloneConfigFields[rcloneBackend];
@@ -2271,12 +2272,23 @@ function BackupWizard({
   }, [stepRequirements, steps.length]);
 
   useEffect(() => {
+    const backupNameChanged = previousDraftNameRef.current !== draft.name;
+    previousDraftNameRef.current = draft.name;
+    if (backupNameChanged && !initialProfile?.repository.rcloneRemoteName) {
+      setRcloneSetup((current) => current.status === "idle" ? current : { status: "idle", message: "" });
+      setRcloneBrowserOpen(false);
+      if (rclonePathTouched) {
+        setDraft((current) => current.repository.type === "rclone"
+          ? { ...current, repository: { type: "rclone", target: "" } }
+          : current);
+      }
+    }
     if (rclonePathTouched) return;
     setRcloneRepositoryPath(defaultRcloneRepositoryPath(draft.name));
     setDraft((current) => current.repository.type === "rclone"
       ? { ...current, repository: { type: "rclone", target: "" } }
       : current);
-  }, [draft.name, rclonePathTouched]);
+  }, [draft.name, initialProfile?.repository.rcloneRemoteName, rclonePathTouched]);
 
   function selectLocation(nextLocation: LocationOption) {
     setLocationOption(nextLocation);
@@ -2586,6 +2598,7 @@ function BackupWizard({
               {rcloneBrowserOpen ? (
                 <RcloneFolderBrowser
                   remoteName={rcloneRemoteName}
+                  selectedPath={rcloneRepositoryPath}
                   suggestedFolderName={suggestedRcloneFolderName}
                   onSelect={(pathName) => {
                     applyRcloneRepositoryPath(pathName);
@@ -2808,20 +2821,34 @@ function BackupWizard({
 
 function RcloneFolderBrowser({
   remoteName,
+  selectedPath,
   suggestedFolderName,
   onSelect
 }: {
   remoteName: string;
+  selectedPath: string;
   suggestedFolderName: string;
   onSelect: (pathName: string) => void;
 }) {
   const [listing, setListing] = useState<DirectoryListing | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, DirectoryListing>>({});
+  const [loadingRoot, setLoadingRoot] = useState(false);
+  const [loadingPaths, setLoadingPaths] = useState<Record<string, boolean>>({});
+  const [selectedFolder, setSelectedFolder] = useState(() => normalizeRemotePathInput(selectedPath));
+  const [newFolderName, setNewFolderName] = useState(suggestedFolderName);
   const [error, setError] = useState("");
 
   useEffect(() => {
     loadDirectory();
   }, [remoteName]);
+
+  useEffect(() => {
+    setSelectedFolder(normalizeRemotePathInput(selectedPath));
+  }, [selectedPath]);
+
+  useEffect(() => {
+    setNewFolderName((current) => current.trim() ? current : suggestedFolderName);
+  }, [suggestedFolderName]);
 
   async function loadDirectory(pathName = "") {
     if (!remoteName.trim()) {
@@ -2829,75 +2856,206 @@ function RcloneFolderBrowser({
       return;
     }
 
-    setLoading(true);
+    setLoadingRoot(true);
     setError("");
     try {
       setListing(await bridge.listRcloneDirectory({ remoteName, path: pathName }));
+      setExpanded({});
+      setLoadingPaths({});
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to open this remote folder.");
     } finally {
-      setLoading(false);
+      setLoadingRoot(false);
     }
   }
 
-  async function createSuggestedFolder() {
+  function selectFolder(pathName: string) {
+    const normalizedPath = normalizeRemotePathInput(pathName);
+    if (!normalizedPath) return;
+    setSelectedFolder(normalizedPath);
+    onSelect(normalizedPath);
+  }
+
+  async function toggleExpanded(entry: FileEntry) {
+    if (expanded[entry.path]) {
+      setExpanded(({ [entry.path]: _removed, ...remaining }) => remaining);
+      return;
+    }
+
+    setLoadingPaths((current) => ({ ...current, [entry.path]: true }));
+    try {
+      setError("");
+      const nextListing = await bridge.listRcloneDirectory({ remoteName, path: entry.path });
+      setExpanded((current) => ({ ...current, [entry.path]: nextListing }));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to open this remote folder.");
+    } finally {
+      setLoadingPaths((current) => {
+        const { [entry.path]: _done, ...remaining } = current;
+        return remaining;
+      });
+    }
+  }
+
+  async function createFolder() {
     if (!listing) return;
-    const folderPath = joinRemotePath(listing.path, suggestedFolderName);
-    setLoading(true);
+    const folderName = normalizeRemotePathInput(newFolderName);
+    if (!folderName) {
+      setError("Enter a folder name.");
+      return;
+    }
+
+    const folderPath = joinRemotePath(listing.path, folderName);
+    setLoadingRoot(true);
     setError("");
     try {
       const nextListing = await bridge.createRcloneDirectory({ remoteName, path: folderPath });
       setListing(nextListing);
-      onSelect(nextListing.path);
+      setExpanded({});
+      selectFolder(nextListing.path);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Unable to create this remote folder.");
     } finally {
-      setLoading(false);
+      setLoadingRoot(false);
     }
   }
 
   if (!listing) {
     return (
       <div className="grid gap-2">
-        {loading ? <p className="setup-status"><FontAwesomeIcon className="animate-spin" icon={faRotateRight} /> Loading remote folders...</p> : null}
+        {loadingRoot ? <p className="setup-status"><FontAwesomeIcon className="animate-spin" icon={faRotateRight} /> Loading remote folders...</p> : null}
         {error ? <p className="setup-status error">{error}</p> : null}
       </div>
     );
   }
 
   return (
-    <div className="rclone-browser rounded-md border border-ink/10">
+    <div className="rclone-browser file-tree rounded-md border border-ink/10">
       <div className="flex flex-col gap-3 border-b border-ink/10 p-3 md:flex-row md:items-center md:justify-between">
         <p className="path-pill min-w-0 flex-1">{listing.path ? `/${listing.path}` : "Remote root"}</p>
         <div className="flex flex-wrap gap-2">
-          <button className="small-button" disabled={loading} onClick={() => loadDirectory()}>
+          <button className="small-button" disabled={loadingRoot} onClick={() => loadDirectory()}>
             <FontAwesomeIcon icon={faHouse} /> Root
           </button>
-          <button className="small-button" disabled={loading || listing.parent === null} onClick={() => loadDirectory(listing.parent ?? "")}>
+          <button className="small-button" disabled={loadingRoot || listing.parent === null} onClick={() => loadDirectory(listing.parent ?? "")}>
             <FontAwesomeIcon icon={faArrowUp} /> Up
           </button>
-          <button className="small-button" disabled={loading || !listing.path} onClick={() => onSelect(listing.path)}>
-            <FontAwesomeIcon icon={faCheck} /> Use this folder
+          <button className="small-button" disabled={loadingRoot || !selectedFolder} onClick={() => loadDirectory(selectedFolder)}>
+            <FontAwesomeIcon icon={faFolderOpen} /> Open selected
           </button>
-          <button className="small-button" disabled={loading} onClick={createSuggestedFolder}>
-            <FontAwesomeIcon icon={faPlus} /> Create {suggestedFolderName}
+          <button className="small-button" disabled={loadingRoot || !listing.path} onClick={() => selectFolder(listing.path)}>
+            <FontAwesomeIcon icon={faCheck} /> Use this folder
           </button>
         </div>
       </div>
 
+      <div className="grid gap-2 border-b border-ink/10 p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <input
+          aria-label="New remote folder name"
+          className="text-input"
+          value={newFolderName}
+          onChange={(event) => setNewFolderName(event.target.value)}
+          placeholder={suggestedFolderName}
+        />
+        <button className="small-button justify-center" disabled={loadingRoot} onClick={createFolder}>
+          <FontAwesomeIcon icon={faPlus} /> Create folder
+        </button>
+      </div>
+
+      {selectedFolder ? <p className="m-3 path-pill">Selected: /{selectedFolder}</p> : null}
       {error ? <p className="m-3 rounded-md bg-coral/15 p-3 text-sm font-semibold text-ink">{error}</p> : null}
-      <ul className="stable-scroll max-h-52 overflow-auto p-2">
+      {loadingRoot ? <p className="m-3 setup-status"><FontAwesomeIcon className="animate-spin" icon={faRotateRight} /> Loading remote folders...</p> : null}
+      <ul className="stable-scroll file-tree-list max-h-72 overflow-auto p-2">
         {listing.entries.map((entry) => (
-          <li key={entry.path} className="grid grid-cols-[34px_1fr] items-center gap-2 rounded-md px-2 py-1.5 hover:bg-skyglass/65">
-            <FontAwesomeIcon className="text-pine" icon={faFolderOpen} />
-            <button className="break-all text-left text-sm font-semibold" disabled={loading} onClick={() => loadDirectory(entry.path)}>{entry.name}</button>
-          </li>
+          <RcloneFolderTreeEntry
+            key={entry.path}
+            entry={entry}
+            expanded={expanded}
+            loadingPaths={loadingPaths}
+            level={0}
+            selectedPath={selectedFolder}
+            onSelect={selectFolder}
+            onToggleExpand={toggleExpanded}
+          />
         ))}
-        {listing.entries.length === 0 ? (
-          <li className="px-2 py-6 text-center text-sm font-semibold text-ink/55">No folders here.</li>
+        {!loadingRoot && listing.entries.length === 0 ? (
+          <li className="file-tree-empty">No folders here.</li>
         ) : null}
       </ul>
     </div>
+  );
+}
+
+function RcloneFolderTreeEntry({
+  entry,
+  expanded,
+  loadingPaths,
+  level,
+  selectedPath,
+  onSelect,
+  onToggleExpand
+}: {
+  entry: FileEntry;
+  expanded: Record<string, DirectoryListing>;
+  loadingPaths: Record<string, boolean>;
+  level: number;
+  selectedPath: string;
+  onSelect: (pathName: string) => void;
+  onToggleExpand: (entry: FileEntry) => void;
+}) {
+  const isExpanded = Boolean(expanded[entry.path]);
+  const isLoading = Boolean(loadingPaths[entry.path]);
+  const isSelected = selectedPath === entry.path;
+  const children = expanded[entry.path]?.entries ?? [];
+
+  return (
+    <li>
+      <div
+        className={`file-tree-row ${isSelected ? "selected" : ""}`}
+        style={{ paddingLeft: `${0.5 + level * 1.25}rem` }}
+      >
+        <button
+          aria-label={`${isExpanded ? "Collapse" : "Expand"} ${entry.name}`}
+          className="icon-button small file-tree-expand"
+          disabled={isLoading}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleExpand(entry);
+          }}
+          type="button"
+        >
+          <FontAwesomeIcon className={isLoading ? "animate-spin" : ""} icon={isLoading ? faRotateRight : isExpanded ? faChevronDown : faChevronRight} />
+        </button>
+        <button
+          aria-pressed={isSelected}
+          className="file-tree-select"
+          onClick={() => onSelect(entry.path)}
+          type="button"
+        >
+          <FontAwesomeIcon className="text-pine" icon={faFolderOpen} />
+          <span>{entry.name}</span>
+        </button>
+      </div>
+      {isExpanded ? (
+        <ul>
+          {children.map((child) => (
+            <RcloneFolderTreeEntry
+              key={child.path}
+              entry={child}
+              expanded={expanded}
+              loadingPaths={loadingPaths}
+              level={level + 1}
+              selectedPath={selectedPath}
+              onSelect={onSelect}
+              onToggleExpand={onToggleExpand}
+            />
+          ))}
+          {children.length === 0 ? (
+            <li className="file-tree-empty" style={{ paddingLeft: `${2.5 + (level + 1) * 1.25}rem` }}>No folders here.</li>
+          ) : null}
+        </ul>
+      ) : null}
+    </li>
   );
 }
 
@@ -3124,6 +3282,7 @@ function RestoreFlow({
                       {externalRcloneBrowserOpen ? (
                         <RcloneFolderBrowser
                           remoteName={externalRcloneRemoteName}
+                          selectedPath={externalRclonePath}
                           suggestedFolderName="backups"
                           onSelect={(pathName) => {
                             setExternalRclonePath(pathName);

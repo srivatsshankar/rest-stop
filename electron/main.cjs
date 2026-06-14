@@ -852,11 +852,16 @@ async function listRcloneDirectory(options) {
   const rclone = await findRclone();
   if (!rclone?.path) throw new Error("Rclone is not installed.");
 
-  const result = await runProcess(
-    rclone.path,
-    ["lsf", rcloneRemoteTarget(remoteName, directoryPath), "--dirs-only", "--format", "p"],
-    rcloneProcessOptions({ timeoutMs: 60 * 1000 })
-  );
+  let result;
+  try {
+    result = await runProcess(
+      rclone.path,
+      ["lsf", rcloneRemoteTarget(remoteName, directoryPath), "--dirs-only", "--format", "p"],
+      rcloneProcessOptions({ timeoutMs: 60 * 1000 })
+    );
+  } catch (error) {
+    throw friendlyRcloneRemoteError(error, remoteName);
+  }
   const entries = result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim().replace(/\/+$/g, ""))
@@ -883,9 +888,24 @@ async function createRcloneDirectory(options) {
   const rclone = await findRclone();
   if (!rclone?.path) throw new Error("Rclone is not installed.");
 
-  await runProcess(rclone.path, ["mkdir", rcloneRemoteTarget(remoteName, directoryPath)], rcloneProcessOptions({ timeoutMs: 60 * 1000 }));
+  try {
+    await runProcess(rclone.path, ["mkdir", rcloneRemoteTarget(remoteName, directoryPath)], rcloneProcessOptions({ timeoutMs: 60 * 1000 }));
+  } catch (error) {
+    throw friendlyRcloneRemoteError(error, remoteName);
+  }
   clearCacheByPrefix(rcloneDirectoryCache, `rclone:${remoteName}:`);
   return listRcloneDirectory({ remoteName, path: directoryPath });
+}
+
+function friendlyRcloneRemoteError(error, remoteName) {
+  if (isMissingRcloneRemoteError(error)) {
+    return new Error(`The Rclone account "${remoteName}" is not connected on this computer. Reconnect the backend account, then try browsing again.`);
+  }
+  return error;
+}
+
+function isMissingRcloneRemoteError(error) {
+  return /didn'?t find section in config file|not found in config|couldn'?t find remote|remote .* not found/i.test(errorOutput(error));
 }
 
 function rcloneRemoteTarget(remoteName, directoryPath) {
