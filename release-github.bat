@@ -67,8 +67,7 @@ if not defined REPO (
 
 gh release view "%TAG%" --repo "%REPO%" >nul 2>nul
 if not errorlevel 1 (
-  echo Release %TAG% already exists on GitHub.
-  exit /b 1
+  set "RELEASE_EXISTS=1"
 )
 
 echo Running a local build check...
@@ -82,6 +81,12 @@ if errorlevel 1 exit /b %ERRORLEVEL%
 echo Creating release tag %TAG%...
 git tag -a "%TAG%" -m "Release %VERSION%"
 if errorlevel 1 exit /b %ERRORLEVEL%
+
+if defined RELEASE_EXISTS (
+  echo Replacing existing GitHub release %TAG%...
+  gh release delete "%TAG%" --repo "%REPO%" --yes
+  if errorlevel 1 exit /b %ERRORLEVEL%
+)
 
 echo Pushing release tag %TAG%...
 if defined REMOTE_TAG_EXISTS (
