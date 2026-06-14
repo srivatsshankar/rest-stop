@@ -15,6 +15,7 @@ import {
   faDatabase,
   faFile,
   faFolderOpen,
+  faBell,
   faGear,
   faHouse,
   faKey,
@@ -54,7 +55,7 @@ type BackupSchedule = {
 
 type SchedulePreset = "on-demand" | "half-hour" | "one-hour" | "six-hours" | "twelve-hours" | "one-day" | "one-week" | "custom";
 
-type AppView = "home" | "backup" | "restore" | "settings";
+type AppView = "home" | "backup" | "restore" | "settings" | "notifications";
 
 type RetentionBucket = "latest" | "hourly" | "daily" | "weekly" | "monthly" | "yearly";
 
@@ -163,6 +164,9 @@ type BackupRunStatus = {
   processCount: number;
   profileIds: string[];
   percentComplete: number | null;
+  bytesDone?: number | null;
+  totalBytes?: number | null;
+  estimatedSecondsRemaining?: number | null;
   progressLabel: string;
   errorDetails: {
     title: string;
@@ -191,12 +195,25 @@ type RestoreRun = {
   message?: string;
 };
 
+type AppNotification = {
+  id: string;
+  key: string;
+  title: string;
+  body: string;
+  createdAt: string;
+};
+
 type TaskbarStatus = "paused" | "running" | "failed";
 
 type BackupVersionCount = {
-  status: "loading" | "ready" | "error";
+  status: "loading" | "ready" | "error" | "pending";
   count?: number;
   message?: string;
+};
+
+type AppSettings = {
+  autoUpdatesEnabled?: boolean;
+  defaultExcludes: string[];
 };
 
 type ReststopBridge = {
@@ -225,10 +242,13 @@ type ReststopBridge = {
   listRestoreSnapshots: (options: { repository: BackupProfile["repository"]; password: string }) => Promise<ResticSnapshot[]>;
   listRestoreFiles: (options: { repository: BackupProfile["repository"]; password: string; snapshotId: string; path?: string }) => Promise<DirectoryListing>;
   startRestore: (options: RestoreStartOptions) => Promise<{ message: string }>;
+  getSettings: () => Promise<AppSettings>;
+  saveBackupDefaults: (settings: Pick<AppSettings, "defaultExcludes">) => Promise<AppSettings>;
   getAutoUpdatesEnabled: () => Promise<boolean>;
   setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
   exportConfig: () => Promise<{ cancelled: boolean; path?: string }>;
-  restoreConfig: () => Promise<{ cancelled: boolean; path?: string; profiles?: BackupProfile[]; settings?: { autoUpdatesEnabled?: boolean } }>;
+  restoreConfig: () => Promise<{ cancelled: boolean; path?: string; profiles?: BackupProfile[]; settings?: AppSettings }>;
+  listNotifications: () => Promise<AppNotification[]>;
   setTaskbarStatus: (status: TaskbarStatus) => Promise<void>;
   minimizeWindow: () => Promise<void>;
   toggleMaximizeWindow: () => Promise<void>;
@@ -266,6 +286,9 @@ const fallbackBridge: ReststopBridge = {
     processCount: 0,
     profileIds: [],
     percentComplete: null,
+    bytesDone: null,
+    totalBytes: null,
+    estimatedSecondsRemaining: null,
     progressLabel: "No backup is running.",
     errorDetails: null,
     checkedAt: new Date().toISOString()
@@ -275,6 +298,9 @@ const fallbackBridge: ReststopBridge = {
     processCount: 0,
     profileIds: [],
     percentComplete: null,
+    bytesDone: null,
+    totalBytes: null,
+    estimatedSecondsRemaining: null,
     progressLabel: "Run inside Electron to start backups.",
     errorDetails: null,
     checkedAt: new Date().toISOString()
@@ -284,6 +310,9 @@ const fallbackBridge: ReststopBridge = {
     processCount: 0,
     profileIds: [],
     percentComplete: null,
+    bytesDone: null,
+    totalBytes: null,
+    estimatedSecondsRemaining: null,
     progressLabel: "Run inside Electron to stop backups.",
     errorDetails: null,
     checkedAt: new Date().toISOString()
@@ -311,10 +340,13 @@ const fallbackBridge: ReststopBridge = {
   startRestore: async () => {
     throw new Error("Run inside Electron to restore files.");
   },
+  getSettings: async () => ({ defaultExcludes: defaultExcludePatterns }),
+  saveBackupDefaults: async (settings) => ({ defaultExcludes: normalizeExcludePatterns(settings.defaultExcludes) }),
   getAutoUpdatesEnabled: async () => true,
   setAutoUpdatesEnabled: async (enabled) => enabled,
   exportConfig: async () => ({ cancelled: true }),
   restoreConfig: async () => ({ cancelled: true }),
+  listNotifications: async () => [],
   setTaskbarStatus: async () => undefined,
   minimizeWindow: async () => undefined,
   toggleMaximizeWindow: async () => undefined,
@@ -345,10 +377,7 @@ const locationOptions: { value: LocationOption; label: string }[] = [
 ];
 
 const rcloneConfigFields: Record<RcloneBackend, { key: string; label: string; type?: "password"; placeholder?: string; required?: boolean }[]> = {
-  drive: [
-    { key: "client_id", label: "Google Drive client ID" },
-    { key: "client_secret", label: "Google Drive client secret", type: "password" }
-  ],
+  drive: [],
   onedrive: [],
   dropbox: [],
   box: [],
@@ -486,6 +515,39 @@ const defaultRetention: RetentionPolicy = {
   monthly: 12,
   yearly: 3
 };
+const defaultExcludePatterns = [
+  "**/venv/",
+  "**/env/",
+  "**/.venv/",
+  "**/virtualenv/",
+  "**/__pycache__/",
+  "*.pyc",
+  "*.pyo",
+  "**/node_modules/",
+  "**/.npm/",
+  "**/.yarn/",
+  "**/.pnpm-store/",
+  "**/vendor/",
+  "**/target/",
+  "**/build/",
+  "**/dist/",
+  "**/.gradle/",
+  "**/.m2/",
+  "**/.bundle/",
+  "**/bin/Debug/",
+  "**/bin/Release/",
+  "**/obj/",
+  "**/.next/",
+  "**/.nuxt/",
+  "**/.cache/",
+  "**/.pytest_cache/",
+  "**/.tox/",
+  "**/.eggs/",
+  "*.egg-info/",
+  "**/.vscode/",
+  "**/.idea/"
+];
+const defaultExcludeText = defaultExcludePatterns.join("\n");
 const schedulePresetOptions: { value: SchedulePreset; label: string }[] = [
   { value: "on-demand", label: "Only when I run it" },
   { value: "half-hour", label: "Every half hour" },
@@ -508,7 +570,7 @@ const emptyDraft: DraftProfile = {
   passwordConfirm: "",
   repository: { type: "local", target: "" },
   sources: [],
-  excludes: "",
+  excludes: defaultExcludeText,
   schedule: defaultSchedule,
   schedulePaused: false,
   retention: defaultRetention
@@ -525,6 +587,9 @@ function App() {
     processCount: 0,
     profileIds: [],
     percentComplete: null,
+    bytesDone: null,
+    totalBytes: null,
+    estimatedSecondsRemaining: null,
     progressLabel: "No backup is running.",
     errorDetails: null,
     checkedAt: new Date().toISOString()
@@ -537,10 +602,14 @@ function App() {
   const [deletePromptOpen, setDeletePromptOpen] = useState(false);
   const [deleteProfileId, setDeleteProfileId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationsError, setNotificationsError] = useState("");
   const [restoreRuns, setRestoreRuns] = useState<RestoreRun[]>([]);
   const [versionCounts, setVersionCounts] = useState<Record<string, BackupVersionCount>>({});
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
   const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
+  const [defaultExcludes, setDefaultExcludes] = useState(defaultExcludeText);
   const [configMessage, setConfigMessage] = useState("");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     const stored = localStorage.getItem("reststop-theme");
@@ -558,7 +627,15 @@ function App() {
     runResticCheck();
     runRcloneCheck();
     refreshBackupStatus();
-    bridge.getAutoUpdatesEnabled().then(setAutoUpdatesEnabledState).catch(() => setAutoUpdatesEnabledState(true));
+    bridge.getSettings()
+      .then((settings) => {
+        setAutoUpdatesEnabledState(settings.autoUpdatesEnabled !== false);
+        setDefaultExcludes(excludePatternsToText(settings.defaultExcludes));
+      })
+      .catch(() => {
+        setAutoUpdatesEnabledState(true);
+        setDefaultExcludes(defaultExcludeText);
+      });
   }, []);
 
   useEffect(() => {
@@ -593,6 +670,7 @@ function App() {
 
   useEffect(() => {
     for (const profile of profiles) {
+      if (profile.reviewRequired) continue;
       if (!versionCounts[profile.id]) void loadBackupVersionCount(profile);
     }
   }, [profiles, versionCounts]);
@@ -605,6 +683,10 @@ function App() {
     if (menuOpen) document.addEventListener("mousedown", closeMenuOnOutsideClick);
     return () => document.removeEventListener("mousedown", closeMenuOnOutsideClick);
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (view === "notifications") void loadNotifications();
+  }, [view]);
 
   useEffect(() => {
     localStorage.setItem("reststop-global-schedule-paused", String(globalSchedulePaused));
@@ -691,6 +773,15 @@ function App() {
     }
   }
 
+  async function handleDefaultExcludesChange(value: string) {
+    setDefaultExcludes(value);
+    try {
+      await bridge.saveBackupDefaults({ defaultExcludes: normalizeExcludePatterns(value) });
+    } catch (error) {
+      setConfigMessage(error instanceof Error ? error.message : "Unable to save backup defaults.");
+    }
+  }
+
   async function handleExportConfig() {
     setConfigMessage("");
     try {
@@ -706,11 +797,18 @@ function App() {
     try {
       const result = await bridge.restoreConfig();
       if (result.cancelled) return;
-      setProfiles(result.profiles ?? []);
+      const restoredProfiles = result.profiles ?? [];
+      setProfiles(restoredProfiles);
       setVersionCounts({});
       setExpandedProfileId(null);
       setAutoUpdatesEnabledState(result.settings?.autoUpdatesEnabled !== false);
-      setConfigMessage(`Config restored from ${result.path}. All backups are paused. Review and save each backup before running it.`);
+      setDefaultExcludes(excludePatternsToText(result.settings?.defaultExcludes ?? defaultExcludePatterns));
+      setConfigMessage(`Config restored from ${result.path}. Enter credentials for each restored backup before running it.`);
+      if (restoredProfiles.length > 0) {
+        setEditingProfile(restoredProfiles[0]);
+        setExpandedProfileId(restoredProfiles[0].id);
+        navigateTo("backup");
+      }
     } catch (error) {
       setConfigMessage(error instanceof Error ? error.message : "Unable to restore the config file.");
     }
@@ -730,6 +828,18 @@ function App() {
         errorDetails: null,
         checkedAt: new Date().toISOString()
       }));
+    }
+  }
+
+  async function loadNotifications() {
+    setNotificationsLoading(true);
+    setNotificationsError("");
+    try {
+      setNotifications(await bridge.listNotifications());
+    } catch (error) {
+      setNotificationsError(error instanceof Error ? error.message : "Unable to load notifications.");
+    } finally {
+      setNotificationsLoading(false);
     }
   }
 
@@ -766,12 +876,23 @@ function App() {
   async function handleSave(profile: DraftProfile) {
     const previousProfileIds = new Set(profiles.map((item) => item.id));
     const isNewProfile = !profile.id || !previousProfileIds.has(profile.id);
+    const wasReviewRequired = Boolean(profile.id && profiles.find((item) => item.id === profile.id)?.reviewRequired);
     const saved = await bridge.saveProfile(profile);
     const savedProfile = isNewProfile
       ? saved.find((item) => !previousProfileIds.has(item.id)) ?? saved[saved.length - 1]
       : saved.find((item) => item.id === profile.id);
     setProfiles(saved);
     setExpandedProfileId(savedProfile?.id ?? profile.id ?? saved[saved.length - 1]?.id ?? null);
+    if (wasReviewRequired) {
+      const nextReviewProfile = saved.find((item) => item.reviewRequired);
+      if (nextReviewProfile) {
+        setEditingProfile(nextReviewProfile);
+        setExpandedProfileId(nextReviewProfile.id);
+        await refreshBackupStatus();
+        return;
+      }
+      setConfigMessage("All restored backup credentials have been saved.");
+    }
     navigateHome();
     if (isNewProfile && savedProfile) {
       await executeBackupRun(savedProfile, profile.password, false);
@@ -884,6 +1005,9 @@ function App() {
       running: true,
       profileIds: [profile.id],
       percentComplete: 0,
+      bytesDone: null,
+      totalBytes: null,
+      estimatedSecondsRemaining: null,
       progressLabel: "Starting backup...",
       errorDetails: null,
       checkedAt: new Date().toISOString()
@@ -992,6 +1116,22 @@ function App() {
               <div className="top-menu-action">
                 <button
                   className="new-menu-button tooltip-button"
+                  aria-label="Notifications"
+                  aria-pressed={view === "notifications"}
+                  data-tooltip="Notifications"
+                  onClick={() => {
+                    if (view === "notifications") goBack();
+                    else navigateTo("notifications");
+                    setMenuOpen(false);
+                  }}
+                >
+                  <FontAwesomeIcon icon={faBell} />
+                </button>
+              </div>
+
+              <div className="top-menu-action">
+                <button
+                  className="new-menu-button tooltip-button"
                   aria-label="Settings"
                   aria-pressed={view === "settings"}
                   data-tooltip="Settings"
@@ -1038,19 +1178,30 @@ function App() {
                 rcloneChecking={rcloneChecking}
                 themeMode={themeMode}
                 autoUpdatesEnabled={autoUpdatesEnabled}
+                defaultExcludes={defaultExcludes}
                 configMessage={configMessage}
                 onCheckRestic={runResticCheck}
                 onCheckRclone={runRcloneCheck}
                 onThemeChange={setThemeMode}
                 onAutoUpdatesChange={handleAutoUpdatesChange}
+                onDefaultExcludesChange={handleDefaultExcludesChange}
                 onExportConfig={handleExportConfig}
                 onRestoreConfig={handleRestoreConfig}
+              />
+            ) : null}
+            {view === "notifications" ? (
+              <NotificationsView
+                notifications={notifications}
+                loading={notificationsLoading}
+                error={notificationsError}
+                onRefresh={loadNotifications}
               />
             ) : null}
             {view === "backup" ? (
               <BackupWizard
                 key={editingProfile?.id ?? "new"}
                 initialProfile={editingProfile}
+                defaultExcludes={defaultExcludes}
                 onCancel={goBack}
                 onSave={handleSave}
               />
@@ -1160,7 +1311,68 @@ function viewLabel(view: AppView) {
   if (view === "backup") return "Backup setup";
   if (view === "restore") return "Restore";
   if (view === "settings") return "Settings";
+  if (view === "notifications") return "Notifications";
   return "Home";
+}
+
+function NotificationsView({
+  notifications,
+  loading,
+  error,
+  onRefresh
+}: {
+  notifications: AppNotification[];
+  loading: boolean;
+  error: string;
+  onRefresh: () => void;
+}) {
+  return (
+    <section className="notifications-view rounded-md border border-ink/10 bg-white p-5 shadow-sm">
+      <div className="notifications-view-header">
+        <div>
+          <h2 className="text-lg font-semibold">Notifications</h2>
+          <p className="text-sm text-ink/65">Backup and restore alerts shown by Rest Stop.</p>
+        </div>
+        <button className="small-button" disabled={loading} type="button" onClick={onRefresh}>
+          <FontAwesomeIcon className={loading ? "animate-spin" : ""} icon={faRotateRight} /> Refresh
+        </button>
+      </div>
+
+      {error ? <p className="setup-status error">{error}</p> : null}
+      {loading && notifications.length === 0 ? <p className="setup-status">Loading notifications...</p> : null}
+      {!loading && notifications.length === 0 ? (
+        <div className="notifications-empty">
+          <FontAwesomeIcon icon={faBell} />
+          <p>No notifications have been shown yet.</p>
+        </div>
+      ) : null}
+      {notifications.length > 0 ? (
+        <ul className="notification-log-list">
+          {notifications.map((notification) => (
+            <li key={notification.id}>
+              <div>
+                <p className="notification-log-title">{notification.title}</p>
+                <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
+              </div>
+              {notification.body ? <p className="notification-log-body">{notification.body}</p> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function formatNotificationTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 function SettingsView({
@@ -1170,11 +1382,13 @@ function SettingsView({
   rcloneChecking,
   themeMode,
   autoUpdatesEnabled,
+  defaultExcludes,
   configMessage,
   onCheckRestic,
   onCheckRclone,
   onThemeChange,
   onAutoUpdatesChange,
+  onDefaultExcludesChange,
   onExportConfig,
   onRestoreConfig
 }: {
@@ -1184,11 +1398,13 @@ function SettingsView({
   rcloneChecking: boolean;
   themeMode: ThemeMode;
   autoUpdatesEnabled: boolean;
+  defaultExcludes: string;
   configMessage: string;
   onCheckRestic: () => void;
   onCheckRclone: () => void;
   onThemeChange: (mode: ThemeMode) => void;
   onAutoUpdatesChange: (enabled: boolean) => void;
+  onDefaultExcludesChange: (value: string) => void;
   onExportConfig: () => void;
   onRestoreConfig: () => void;
 }) {
@@ -1271,6 +1487,11 @@ function SettingsView({
           </div>
         </div>
         {configMessage ? <p className="setup-status">{configMessage}</p> : null}
+      </section>
+
+      <section className="settings-section backup-defaults-section">
+        <p className="settings-label">Backup defaults</p>
+        <ExclusionFilterEditor label="Default exclusions" value={defaultExcludes} onChange={onDefaultExcludesChange} />
       </section>
     </section>
   );
@@ -1399,7 +1620,7 @@ function BackupList({
         const isProfileSchedulePaused = profile.schedule.mode === "recurring" && Boolean(profile.schedulePaused);
         const isSchedulePaused = profile.schedule.mode === "recurring" && (globalSchedulePaused || Boolean(profile.schedulePaused));
         const reviewRequired = Boolean(profile.reviewRequired);
-        const versionCount = versionCounts[profile.id] ?? { status: "loading" };
+        const versionCount: BackupVersionCount = reviewRequired ? { status: "pending" } : versionCounts[profile.id] ?? { status: "loading" };
         const statusLabel = isProfileRunning
           ? "Running"
           : backupError
@@ -1489,6 +1710,8 @@ function BackupList({
 function BackupVersionIndicator({ versionCount }: { versionCount: BackupVersionCount }) {
   const label = versionCount.status === "ready"
     ? `${versionCount.count ?? 0} ${(versionCount.count ?? 0) === 1 ? "version" : "versions"}`
+    : versionCount.status === "pending"
+      ? "Review first"
     : versionCount.status === "error"
       ? "Versions unavailable"
       : "Counting...";
@@ -1532,6 +1755,13 @@ function BackupProgress({ status, isProfileRunning }: { status: BackupRunStatus;
   const isWaiting = isBackupWaitingForNetwork(status);
   const percentLabel = isWaiting ? "Waiting" : !status.running ? "No backup running" : percent === null ? "Unknown" : `${Math.round(percent)}%`;
   const percentLabelClass = `backup-progress-value ${status.running ? "running" : "idle"}`;
+  const showDetails = status.running && isRelevant;
+  const totalSizeLabel = showDetails && typeof status.totalBytes === "number" && status.totalBytes > 0
+    ? formatBytes(status.totalBytes)
+    : null;
+  const timeRemainingLabel = showDetails && typeof status.estimatedSecondsRemaining === "number" && status.estimatedSecondsRemaining > 0
+    ? formatDuration(status.estimatedSecondsRemaining)
+    : null;
   const label = hasProfileMessage
     ? status.progressLabel
     : !status.running
@@ -1554,10 +1784,53 @@ function BackupProgress({ status, isProfileRunning }: { status: BackupRunStatus;
         <div className="progress-track" aria-label="Backup progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} role="progressbar">
           <div className={`progress-fill ${status.running && percent === null ? "indeterminate" : ""}`} style={{ width: `${percent ?? 0}%` }} />
         </div>
+        {(totalSizeLabel || timeRemainingLabel) ? (
+          <div className="backup-progress-metadata">
+            {totalSizeLabel ? (
+              <span>
+                <strong>Total size</strong>
+                {totalSizeLabel}
+              </span>
+            ) : null}
+            {timeRemainingLabel ? (
+              <span>
+                <strong>Time remaining</strong>
+                {timeRemainingLabel}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <p className="backup-progress-label">{label}</p>
       </dd>
     </div>
   );
+}
+
+function formatBytes(bytes: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Math.max(0, bytes);
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatDuration(seconds: number) {
+  const roundedSeconds = Math.max(1, Math.round(seconds));
+  const hours = Math.floor(roundedSeconds / 3600);
+  const minutes = Math.floor((roundedSeconds % 3600) / 60);
+  const remainingSeconds = roundedSeconds % 60;
+
+  if (hours > 0) {
+    return minutes > 0 ? `About ${hours} hr ${minutes} min` : `About ${hours} hr`;
+  }
+  if (minutes > 0) {
+    return remainingSeconds >= 30 ? `About ${minutes + 1} min` : `About ${minutes} min`;
+  }
+  return `About ${remainingSeconds} sec`;
 }
 
 function BackupErrorDetails({ details }: { details: NonNullable<BackupRunStatus["errorDetails"]> }) {
@@ -1764,9 +2037,27 @@ function isValidWeekday(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6;
 }
 
+function normalizeExcludePatterns(value: unknown) {
+  const rawPatterns = Array.isArray(value)
+    ? value
+    : String(value ?? "").split(/\r?\n/);
+  return rawPatterns
+    .map((pattern) => String(pattern).trim())
+    .filter((pattern) => pattern && pattern !== "*.");
+}
+
+function excludePatternsToText(value: unknown) {
+  return normalizeExcludePatterns(value).join("\n");
+}
+
+function normalizeExcludeText(value: unknown) {
+  return excludePatternsToText(value);
+}
+
 function normalizeProfile(profile: BackupProfile): BackupProfile {
   return {
     ...profile,
+    excludes: normalizeExcludeText(profile.excludes),
     schedule: normalizeSchedule(profile.schedule),
     schedulePaused: Boolean(profile.schedulePaused),
     reviewRequired: Boolean(profile.reviewRequired),
@@ -1832,12 +2123,13 @@ function normalizeRetention(retention: BackupProfile["retention"] | Record<strin
   return defaultRetention;
 }
 
-function draftFromProfile(profile: BackupProfile | null): DraftProfile {
+function draftFromProfile(profile: BackupProfile | null, defaultExcludes = defaultExcludeText): DraftProfile {
   if (!profile) {
     return {
       ...emptyDraft,
       repository: { ...emptyDraft.repository },
       sources: [],
+      excludes: normalizeExcludeText(defaultExcludes),
       schedule: { ...defaultSchedule },
       retention: { ...defaultRetention }
     };
@@ -1878,16 +2170,18 @@ function locationOptionFromProfile(profile: BackupProfile | null): LocationOptio
 
 function BackupWizard({
   initialProfile,
+  defaultExcludes,
   onCancel,
   onSave
 }: {
   initialProfile: BackupProfile | null;
+  defaultExcludes: string;
   onCancel: () => void;
   onSave: (profile: DraftProfile) => Promise<void>;
 }) {
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState<DraftProfile>(() => draftFromProfile(initialProfile));
-  const [selectedSchedulePreset, setSelectedSchedulePreset] = useState<SchedulePreset>(() => schedulePresetFromSchedule(draftFromProfile(initialProfile).schedule));
+  const [draft, setDraft] = useState<DraftProfile>(() => draftFromProfile(initialProfile, defaultExcludes));
+  const [selectedSchedulePreset, setSelectedSchedulePreset] = useState<SchedulePreset>(() => schedulePresetFromSchedule(draftFromProfile(initialProfile, defaultExcludes).schedule));
   const [locationOption, setLocationOption] = useState<LocationOption>(() => locationOptionFromProfile(initialProfile));
   const [locationAnalysis, setLocationAnalysis] = useState<BackupLocationAnalysis | null>(null);
   const [rcloneBackend, setRcloneBackend] = useState<RcloneBackend>(() => initialProfile?.repository.rcloneBackend ?? "drive");
@@ -1904,13 +2198,24 @@ function BackupWizard({
   const rcloneFieldsComplete = rcloneFields.every((field) => !field.required || rcloneConfig[field.key]?.trim());
   const editingBackup = Boolean(initialProfile?.id);
   const editingRcloneBackup = Boolean(editingBackup && initialProfile?.repository.type === "rclone");
-  const rclonePasswordReady = editingBackup || Boolean(draft.password);
+  const restoringImportedBackup = Boolean(initialProfile?.reviewRequired);
   const passwordFieldsTouched = Boolean(draft.currentPassword || draft.password || draft.passwordConfirm);
   const newPasswordConfirmed = draft.password.length > 0 && draft.password === draft.passwordConfirm;
-  const passwordFormComplete = editingBackup
+  const restoredPasswordConfirmed = draft.currentPassword.length > 0 && draft.currentPassword === draft.passwordConfirm;
+  const passwordFormComplete = restoringImportedBackup
+    ? restoredPasswordConfirmed
+    : editingBackup
     ? !passwordFieldsTouched || (draft.currentPassword.length > 0 && newPasswordConfirmed)
     : newPasswordConfirmed;
-  const passwordMessage = editingBackup
+  const passwordMessage = restoringImportedBackup
+    ? !draft.currentPassword
+      ? "Enter the backup password for this restored backup."
+      : !draft.passwordConfirm
+        ? "Confirm the backup password."
+        : draft.currentPassword !== draft.passwordConfirm
+          ? "Backup passwords do not match."
+          : "Backup password is ready."
+    : editingBackup
     ? passwordFieldsTouched
       ? !draft.currentPassword
         ? "Enter the current backup password before changing it."
@@ -1927,23 +2232,28 @@ function BackupWizard({
       : draft.password !== draft.passwordConfirm
         ? "Passwords do not match."
         : "Password confirmed.";
-  const passwordMessageIsError = editingBackup
+  const passwordMessageIsError = restoringImportedBackup
+    ? Boolean(draft.passwordConfirm) && !passwordFormComplete
+    : editingBackup
     ? passwordFieldsTouched && !passwordFormComplete
     : Boolean(draft.passwordConfirm) && !passwordFormComplete;
   const detailsComplete = draft.name.trim().length > 0 && passwordFormComplete;
+  const rcloneAccountConnected = rcloneSetup.status === "success" || editingRcloneBackup;
+  const rcloneReviewComplete = draft.repository.type !== "rclone" || rcloneAccountConnected;
+  const locationComplete = draft.repository.target.trim().length > 0 && rcloneReviewComplete;
   const canContinue = useMemo(() => {
     if (step === 0) return detailsComplete;
-    if (step === 1) return draft.repository.target.trim().length > 0;
+    if (step === 1) return locationComplete;
     if (step === 2) return draft.sources.length > 0;
     return true;
-  }, [detailsComplete, draft, step]);
+  }, [detailsComplete, draft, locationComplete, step]);
   const stepRequirements = useMemo(() => [
     detailsComplete,
-    draft.repository.target.trim().length > 0,
+    locationComplete,
     draft.sources.length > 0,
     true,
     true
-  ], [detailsComplete, draft]);
+  ], [detailsComplete, draft, locationComplete]);
   const canSave = stepRequirements.every(Boolean);
   const weeklySchedule = draft.schedule.mode === "recurring" && draft.schedule.unit === "weeks" && draft.schedule.every === 1;
   const rcloneRemoteName = initialProfile?.repository.rcloneRemoteName ?? defaultRcloneRemoteName(draft.name);
@@ -2007,10 +2317,14 @@ function BackupWizard({
     setDraft((current) => ({ ...current, repository: { type: "rclone", target: "" } }));
   }
 
-  async function rcloneSetupPassword() {
-    if (!editingBackup) return draft.password;
-    const storedPassword = initialProfile?.id ? await bridge.getStoredPassword(initialProfile.id) : null;
-    return draft.currentPassword || storedPassword || draft.password;
+  function applyRcloneRepositoryPath(pathName: string) {
+    const normalizedPath = normalizeRemotePathInput(pathName);
+    setRcloneRepositoryPath(pathName);
+    setRclonePathTouched(true);
+    setDraft((current) => ({
+      ...current,
+      repository: normalizedPath ? rcloneRepository(rcloneRemoteName, rcloneBackend, normalizedPath) : { type: "rclone", target: "" }
+    }));
   }
 
   async function connectRcloneRepository(replaceRemote = false) {
@@ -2025,30 +2339,22 @@ function BackupWizard({
           : "Connecting Rclone..."
     });
     try {
-      const repositoryPassword = await rcloneSetupPassword();
-      if (!repositoryPassword) throw new Error("Enter the current backup password before connecting this backend.");
-      const result = await bridge.setupRcloneRepository({
+      const result = await bridge.connectRcloneAccount({
         backend: rcloneBackend,
         remoteName: rcloneRemoteName,
-        repositoryPath: rcloneRepositoryPath,
-        password: repositoryPassword,
         config: rcloneConfig,
         replaceRemote
       });
+      const normalizedPath = normalizeRemotePathInput(rcloneRepositoryPath);
 
       setDraft((current) => ({
         ...current,
-        repository: {
-          type: "rclone",
-          target: result.target,
-          rcloneBackend: result.backend,
-          rcloneRemoteName: result.remoteName,
-          rclonePath: result.repositoryPath
-        }
+        repository: normalizedPath ? rcloneRepository(result.remoteName, result.backend, normalizedPath) : { type: "rclone", target: "" }
       }));
-      setRcloneRepositoryPath(result.repositoryPath);
+      setRcloneRepositoryPath(normalizedPath || rcloneRepositoryPath);
       setRclonePathTouched(true);
       setRcloneSetup({ status: "success", message: result.message });
+      setRcloneBrowserOpen(true);
     } catch (error) {
       setRcloneSetup({ status: "error", message: error instanceof Error ? error.message : "Unable to connect Rclone." });
     }
@@ -2112,6 +2418,13 @@ function BackupWizard({
 
   return (
     <section className="rounded-md border border-ink/10 bg-white p-5 shadow-sm">
+      {restoringImportedBackup ? (
+        <section className="backup-review-notice mb-4">
+          <p className="backup-error-eyebrow">Credentials required</p>
+          <h3>Finish restoring {initialProfile?.name}</h3>
+          <p>Enter the backup password, reconnect the backend account if needed, then save this backup before moving to the next restored backup.</p>
+        </section>
+      ) : null}
       <Stepper steps={steps} current={step} canSelect={(index) => index <= highestSelectableStep} onSelect={goToStep} />
 
       {step === 0 ? (
@@ -2126,7 +2439,34 @@ function BackupWizard({
             <FontAwesomeIcon icon={faShieldHalved} />
             Restic backups are encrypted. Save this password safely; there is no recovery key if it is lost.
           </p>
-          {editingBackup ? (
+          {restoringImportedBackup ? (
+            <>
+              <Field label="Backup password">
+                <input
+                  className="text-input"
+                  type="password"
+                  value={draft.currentPassword}
+                  onChange={(event) => {
+                    setSaveError("");
+                    setDraft({ ...draft, encryptionEnabled: true, currentPassword: event.target.value, password: "" });
+                  }}
+                  placeholder="Required to open this backup"
+                />
+              </Field>
+              <Field label="Confirm backup password">
+                <input
+                  className="text-input"
+                  type="password"
+                  value={draft.passwordConfirm}
+                  onChange={(event) => {
+                    setSaveError("");
+                    setDraft({ ...draft, encryptionEnabled: true, passwordConfirm: event.target.value, password: "" });
+                  }}
+                  placeholder="Repeat backup password"
+                />
+              </Field>
+            </>
+          ) : editingBackup ? (
             <>
               <Field label="Current backup password">
                 <input
@@ -2223,10 +2563,7 @@ function BackupWizard({
                       className="text-input"
                       value={rcloneRepositoryPath}
                       onChange={(event) => {
-                        setRcloneRepositoryPath(event.target.value);
-                        setRclonePathTouched(true);
-                        setRcloneSetup({ status: "idle", message: "" });
-                        setDraft((current) => ({ ...current, repository: { type: "rclone", target: "" } }));
+                        applyRcloneRepositoryPath(event.target.value);
                       }}
                       placeholder={defaultRcloneRepositoryPath(draft.name)}
                     />
@@ -2235,6 +2572,7 @@ function BackupWizard({
                       className="icon-button tooltip-button input-action-button"
                       data-tooltip="Choose Remote Folder"
                       type="button"
+                      disabled={!rcloneAccountConnected}
                       onClick={() => setRcloneBrowserOpen(true)}
                     >
                       <FontAwesomeIcon icon={faFolderOpen} />
@@ -2247,10 +2585,7 @@ function BackupWizard({
                   remoteName={rcloneRemoteName}
                   suggestedFolderName={suggestedRcloneFolderName}
                   onSelect={(pathName) => {
-                    setRcloneRepositoryPath(pathName);
-                    setRclonePathTouched(true);
-                    setRcloneSetup({ status: "idle", message: "" });
-                    setDraft((current) => ({ ...current, repository: { type: "rclone", target: "" } }));
+                    applyRcloneRepositoryPath(pathName);
                   }}
                 />
               ) : null}
@@ -2274,10 +2609,13 @@ function BackupWizard({
                   <FontAwesomeIcon icon={faFolderOpen} /> Choose with File Explorer
                 </button>
               ) : null}
+              {restoringImportedBackup && rcloneSetup.status !== "success" ? (
+                <p className="setup-status">Reconnect this backend account before continuing.</p>
+              ) : null}
               {editingRcloneBackup ? (
                 <button
                   className="secondary-button justify-center"
-                  disabled={rcloneSetup.status === "working" || !rclonePasswordReady || !passwordFormComplete || !rcloneRepositoryPath.trim() || !rcloneFieldsComplete}
+                  disabled={rcloneSetup.status === "working" || !rcloneFieldsComplete}
                   onClick={() => connectRcloneRepository(true)}
                 >
                   <FontAwesomeIcon className={rcloneSetup.status === "working" ? "animate-spin" : ""} icon={rcloneSetup.status === "working" ? faRotateRight : faKey} />
@@ -2286,11 +2624,11 @@ function BackupWizard({
               ) : (
                 <button
                   className="secondary-button justify-center"
-                  disabled={rcloneSetup.status === "working" || !rclonePasswordReady || !passwordFormComplete || !rcloneRepositoryPath.trim() || !rcloneFieldsComplete}
+                  disabled={rcloneSetup.status === "working" || !rcloneFieldsComplete}
                   onClick={() => connectRcloneRepository(false)}
                 >
                   <FontAwesomeIcon className={rcloneSetup.status === "working" ? "animate-spin" : ""} icon={rcloneSetup.status === "working" ? faRotateRight : faKey} />
-                  {rcloneSetup.status === "working" ? "Connecting Rclone" : "Connect and initialize"}
+                  {rcloneSetup.status === "working" ? "Connecting account" : "Connect account"}
                 </button>
               )}
               {rcloneSetup.message ? <p className={`setup-status ${rcloneSetup.status}`}>{rcloneSetup.message}</p> : null}
@@ -2317,14 +2655,7 @@ function BackupWizard({
         <div className="wizard-grid">
           <FileBrowser selected={draft.sources} onChange={(sources) => setDraft({ ...draft, sources })} />
           <SelectedPaths paths={draft.sources} onRemove={(path) => setDraft({ ...draft, sources: draft.sources.filter((item) => item !== path) })} />
-          <Field label="Exclude files matching regex">
-            <textarea
-              className="text-input min-h-24 font-mono text-sm"
-              value={draft.excludes}
-              onChange={(event) => setDraft({ ...draft, excludes: event.target.value })}
-              placeholder="node_modules|\\.tmp$|dist"
-            />
-          </Field>
+          <ExclusionFilterEditor label="Exclude files and folders" value={draft.excludes} onChange={(excludes) => setDraft({ ...draft, excludes })} />
         </div>
       ) : null}
 
@@ -3051,13 +3382,107 @@ function BackupReview({ draft }: { draft: DraftProfile }) {
         ["Name", draft.name],
         ["Backup location", formatRepositoryLocation(draft.repository)],
         ["Selected data", `${draft.sources.length} files or folders`],
-        ["Exclusions", draft.excludes || "None"],
+        ["Exclusions", normalizeExcludePatterns(draft.excludes).length ? normalizeExcludePatterns(draft.excludes).join(", ") : "None"],
         ["Frequency", formatSchedule(draft.schedule)],
         ["Retention", formatRetention(draft.retention)],
         ["Encryption", "Required by Restic"]
       ]}
     />
   );
+}
+
+type ExclusionFilterKind = "extension" | "expression";
+
+function ExclusionFilterEditor({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const rows = exclusionRowsFromText(value);
+
+  function updateRow(index: number, pattern: string) {
+    onChange(rows.map((row, rowIndex) => rowIndex === index ? pattern : row).join("\n"));
+  }
+
+  function updateKind(index: number, kind: ExclusionFilterKind) {
+    const pattern = rows[index] ?? "";
+    if (kind === "extension") {
+      updateRow(index, exclusionFilterKind(pattern) === "extension" ? pattern : "*.");
+      return;
+    }
+    updateRow(index, pattern);
+  }
+
+  function removeRow(index: number) {
+    const nextRows = rows.filter((_, rowIndex) => rowIndex !== index);
+    onChange(nextRows.join("\n"));
+  }
+
+  return (
+    <div className="filter-editor">
+      <div className="filter-editor-heading">
+        <span className="text-sm font-semibold text-ink/75">{label}</span>
+        <button className="small-button filter-add-button" type="button" onClick={() => onChange([...rows, ""].join("\n"))}>
+          <FontAwesomeIcon icon={faPlus} /> Add filter
+        </button>
+      </div>
+      <div className="filter-row-list">
+        {rows.map((pattern, index) => {
+          const kind = exclusionFilterKind(pattern);
+          return (
+            <div className="filter-row" key={index}>
+              <select
+                aria-label={`Filter type ${index + 1}`}
+                className="filter-kind-select"
+                value={kind}
+                onChange={(event) => updateKind(index, event.target.value as ExclusionFilterKind)}
+              >
+                <option value="extension">Excludes file extension</option>
+                <option value="expression">Excludes expression</option>
+              </select>
+              {kind === "extension" ? (
+                <div className="filter-pattern-input with-prefix">
+                  <span aria-hidden="true">*.</span>
+                  <input
+                    aria-label={`Filter pattern ${index + 1}`}
+                    value={extensionValueFromPattern(pattern)}
+                    onChange={(event) => updateRow(index, extensionPatternFromValue(event.target.value))}
+                    placeholder="csv"
+                  />
+                </div>
+              ) : (
+                <input
+                  aria-label={`Filter pattern ${index + 1}`}
+                  className="filter-pattern-input"
+                  value={pattern}
+                  onChange={(event) => updateRow(index, event.target.value)}
+                  placeholder="**/node_modules/"
+                />
+              )}
+              <button className="filter-remove-button" type="button" aria-label={`Remove filter ${index + 1}`} onClick={() => removeRow(index)}>
+                <FontAwesomeIcon icon={faXmark} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function exclusionRowsFromText(value: string) {
+  const rows = String(value ?? "").split(/\r?\n/);
+  return rows.length > 0 ? rows : [""];
+}
+
+function exclusionFilterKind(pattern: string): ExclusionFilterKind {
+  return /^\*\.[^*/\\]+$/.test(pattern) || /^\*\.\*[^/\\]+$/.test(pattern) || pattern === "*." ? "extension" : "expression";
+}
+
+function extensionValueFromPattern(pattern: string) {
+  if (/^\*\.\*[^/\\]+$/.test(pattern)) return pattern.slice(3);
+  return pattern.startsWith("*.") ? pattern.slice(2) : pattern;
+}
+
+function extensionPatternFromValue(value: string) {
+  const extension = String(value ?? "").trim().replace(/^\*?\./, "").replace(/^\*/, "");
+  return extension ? `*.${extension}` : "*.";
 }
 
 function ReviewList({ items }: { items: [string, string][] }) {

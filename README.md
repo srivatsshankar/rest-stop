@@ -28,6 +28,7 @@ Rest Stop is a lightweight desktop app for creating, managing, and restoring res
 - Start automatically when the installed app launches at login.
 - Show backup and restore activity in the taskbar and system tray.
 - Surface backup and restore failures with persistent error details.
+- Exclude common extensions and expressions
 
 
 ## Downloads
@@ -67,6 +68,12 @@ Shows the application light mode.
 Shows the collapsible menu providing details of each backup.
 
 ![Collapsible menu preview](docs/previews/dropdown.png)
+
+### Progress Bar
+
+Shows the progress of a backup.
+
+![Collapsible menu preview](docs/previews/backup-progress.png)
 
 ### Taskbar
 

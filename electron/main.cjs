@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, safeStorage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, Notification, dialog, ipcMain, nativeImage, safeStorage, shell } = require("electron");
 const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -31,20 +31,61 @@ let cachedRestic = null;
 let cachedRclone = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const NETWORK_RETRY_MS = 2 * 60 * 1000;
+const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
+const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
+const NOTIFICATION_LOG_FILE = "notifications.json";
 const rcloneDirectoryCache = new Map();
 const restoreSnapshotCache = new Map();
 const restoreFileTreeCache = new Map();
+
+const DEFAULT_EXCLUDES = [
+  "**/venv/",
+  "**/env/",
+  "**/.venv/",
+  "**/virtualenv/",
+  "**/__pycache__/",
+  "*.pyc",
+  "*.pyo",
+  "**/node_modules/",
+  "**/.npm/",
+  "**/.yarn/",
+  "**/.pnpm-store/",
+  "**/vendor/",
+  "**/target/",
+  "**/build/",
+  "**/dist/",
+  "**/.gradle/",
+  "**/.m2/",
+  "**/.bundle/",
+  "**/bin/Debug/",
+  "**/bin/Release/",
+  "**/obj/",
+  "**/.next/",
+  "**/.nuxt/",
+  "**/.cache/",
+  "**/.pytest_cache/",
+  "**/.tox/",
+  "**/.eggs/",
+  "*.egg-info/",
+  "**/.vscode/",
+  "**/.idea/"
+];
+
+const OLD_DEFAULT_DATA_EXCLUDES = ["*.*parquet", "*.*csv", "*.*duckdb"];
+const OLD_DEFAULT_EXCLUDE_MARKERS = [
+  ...OLD_DEFAULT_DATA_EXCLUDES,
+  "**/venv/",
+  "**/node_modules/",
+  "**/.cache/",
+  "**/.vscode/",
+  "**/.idea/"
+];
 
 const rcloneBackends = {
   drive: {
     label: "Google Drive",
     auth: "oauth",
-    config: ["scope", "drive"],
-    oauthClientFields: ["client_id", "client_secret"],
-    fields: [
-      { key: "client_id", configKey: "client_id", label: "Google Drive client ID", required: false },
-      { key: "client_secret", configKey: "client_secret", label: "Google Drive client secret", required: false }
-    ]
+    config: ["scope", "drive"]
   },
   onedrive: { label: "OneDrive", auth: "oauth", config: ["drive_type", "personal"] },
   dropbox: { label: "Dropbox", auth: "oauth", config: [] },
@@ -289,10 +330,13 @@ function registerIpc() {
   ipcMain.handle("restore:list-snapshots", (_event, options) => listRestoreSnapshots(options));
   ipcMain.handle("restore:list-files", (_event, options) => listRestoreFiles(options));
   ipcMain.handle("restore:start", (_event, options) => startRestore(options));
+  ipcMain.handle("settings:get", () => readSettings());
+  ipcMain.handle("settings:save-backup-defaults", (_event, settings) => saveBackupDefaults(settings));
   ipcMain.handle("updates:get-auto-enabled", () => getAutoUpdatesEnabled());
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
   ipcMain.handle("config:export", exportConfig);
   ipcMain.handle("config:restore", restoreConfig);
+  ipcMain.handle("notifications:list", listNotificationLog);
   ipcMain.handle("taskbar:set-status", (_event, status) => updateTaskbarStatus(status));
   ipcMain.handle("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.handle("window:toggle-maximize", (event) => {
@@ -308,7 +352,7 @@ function createTray() {
   if (tray) return;
   tray = new Tray(createTrayStatusIcon(currentTaskbarStatus));
   tray.setToolTip(taskbarOverlayDescription(currentTaskbarStatus));
-  tray.on("click", showMainWindow);
+  tray.on("click", toggleMainWindow);
   tray.on("right-click", () => {
     tray.popUpContextMenu(createTrayMenu());
   });
@@ -330,6 +374,14 @@ function showMainWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+function toggleMainWindow() {
+  if (!mainWindow || !mainWindow.isVisible() || mainWindow.isMinimized()) {
+    showMainWindow();
+    return;
+  }
+  mainWindow.hide();
 }
 
 function quitFromTray() {
@@ -633,7 +685,7 @@ async function setupRcloneRepository(options) {
   await ensureResticRepository(
     restic.path,
     target,
-    envWithToolDirectory({ ...process.env, RESTIC_PASSWORD: password }, rclone.path)
+    envWithRcloneConfigPassword(envWithToolDirectory({ ...process.env, RESTIC_PASSWORD: password }, rclone.path))
   );
 
   return {
@@ -657,6 +709,7 @@ async function connectRcloneAccount(options) {
   if (!rclone.installed || !rclone.path) {
     throw new Error(rclone.message ?? "Rclone is not installed or is not available on PATH. Install Rclone, then try connecting this backend again.");
   }
+  await ensureRcloneConfigEncrypted(rclone.path);
   if (!options?.replaceRemote && await rcloneRemoteExists(rclone.path, remoteName)) {
     return {
       backend,
@@ -687,6 +740,7 @@ async function configureRcloneRemote(options) {
   if (!rclone.installed || !rclone.path) {
     throw new Error(rclone.message ?? "Rclone is not installed or is not available on PATH. Install Rclone, then try connecting this backend again.");
   }
+  await ensureRcloneConfigEncrypted(rclone.path);
 
   const configArgs = [...(backendConfig.config ?? [])];
   let shouldObscure = false;
@@ -704,7 +758,7 @@ async function configureRcloneRemote(options) {
     if (oauthClientValues.some(Boolean) && !oauthClientValues.every(Boolean)) {
       throw new Error("Enter both the Google Drive client ID and client secret, or leave both blank.");
     }
-    const auth = await runProcess(rclone.path, ["authorize", backend, ...oauthClientValues.filter(Boolean)], { timeoutMs: 5 * 60 * 1000 });
+    const auth = await runProcess(rclone.path, ["authorize", backend, ...oauthClientValues.filter(Boolean)], rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 }));
     const token = extractJsonObject(`${auth.stdout}\n${auth.stderr}`);
     configArgs.push("token", token);
   }
@@ -714,21 +768,21 @@ async function configureRcloneRemote(options) {
       await runProcess(
         rclone.path,
         ["config", "update", remoteName, ...configArgs, "--non-interactive", ...(shouldObscure ? ["--obscure"] : [])],
-        { timeoutMs: 60 * 1000 }
+        rcloneProcessOptions({ timeoutMs: 60 * 1000 })
       );
     } catch (error) {
       if (!/not found|doesn't exist|couldn't find|not in config/i.test(errorOutput(error))) throw error;
       await runProcess(
         rclone.path,
         ["config", "create", remoteName, backend, ...configArgs, "--non-interactive", ...(shouldObscure ? ["--obscure"] : [])],
-        { timeoutMs: 60 * 1000 }
+        rcloneProcessOptions({ timeoutMs: 60 * 1000 })
       );
     }
   } else {
     await runProcess(
       rclone.path,
       ["config", "create", remoteName, backend, ...configArgs, "--non-interactive", ...(shouldObscure ? ["--obscure"] : [])],
-      { timeoutMs: 60 * 1000 }
+      rcloneProcessOptions({ timeoutMs: 60 * 1000 })
     );
   }
 
@@ -740,9 +794,28 @@ async function configureRcloneRemote(options) {
   };
 }
 
+async function ensureRcloneConfigEncrypted(rclonePath) {
+  try {
+    await runProcess(rclonePath, ["config", "encryption", "check", "--ask-password=false"], rcloneProcessOptions({ timeoutMs: 30 * 1000 }));
+    return;
+  } catch (error) {
+    const output = errorOutput(error);
+    if (/incorrect password|invalid password|failed to decrypt|couldn't decrypt|bad password/i.test(output)) {
+      throw new Error("The Rclone config is encrypted with a different password. Reconnect it outside Rest Stop or reset the Rclone config before continuing.");
+    }
+  }
+
+  const password = rcloneConfigPassword();
+  await runProcess(
+    rclonePath,
+    ["config", "encryption", "set"],
+    rcloneProcessOptions({ input: `${password}\n${password}\n`, timeoutMs: 60 * 1000 })
+  );
+}
+
 async function rcloneRemoteExists(rclonePath, remoteName) {
   try {
-    await runProcess(rclonePath, ["config", "show", remoteName], { timeoutMs: 10000 });
+    await runProcess(rclonePath, ["config", "show", remoteName], rcloneProcessOptions({ timeoutMs: 10000 }));
     return true;
   } catch {
     return false;
@@ -782,7 +855,7 @@ async function listRcloneDirectory(options) {
   const result = await runProcess(
     rclone.path,
     ["lsf", rcloneRemoteTarget(remoteName, directoryPath), "--dirs-only", "--format", "p"],
-    { timeoutMs: 60 * 1000 }
+    rcloneProcessOptions({ timeoutMs: 60 * 1000 })
   );
   const entries = result.stdout
     .split(/\r?\n/)
@@ -810,7 +883,7 @@ async function createRcloneDirectory(options) {
   const rclone = await findRclone();
   if (!rclone?.path) throw new Error("Rclone is not installed.");
 
-  await runProcess(rclone.path, ["mkdir", rcloneRemoteTarget(remoteName, directoryPath)], { timeoutMs: 60 * 1000 });
+  await runProcess(rclone.path, ["mkdir", rcloneRemoteTarget(remoteName, directoryPath)], rcloneProcessOptions({ timeoutMs: 60 * 1000 }));
   clearCacheByPrefix(rcloneDirectoryCache, `rclone:${remoteName}:`);
   return listRcloneDirectory({ remoteName, path: directoryPath });
 }
@@ -868,7 +941,7 @@ function extractJsonObject(output) {
 }
 
 function runProcess(binary, args, options = {}) {
-  const { timeoutMs, onChild, ...spawnOptions } = options;
+  const { timeoutMs, onChild, input, ...spawnOptions } = options;
   return new Promise((resolve, reject) => {
     const child = childProcess.spawn(binary, args, { windowsHide: true, ...spawnOptions });
     if (typeof onChild === "function") onChild(child);
@@ -884,6 +957,10 @@ function runProcess(binary, args, options = {}) {
 
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    if (input !== undefined) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
@@ -1094,16 +1171,89 @@ function legacySettingsPath() {
 function defaultConfig() {
   return {
     version: 1,
-    settings: {},
+    settings: {
+      defaultExcludes: DEFAULT_EXCLUDES
+    },
     profiles: []
   };
 }
 
 function normalizeConfig(config) {
+  const settings = config && typeof config.settings === "object" && !Array.isArray(config.settings) ? config.settings : {};
   return {
     version: 1,
-    settings: config && typeof config.settings === "object" && !Array.isArray(config.settings) ? config.settings : {},
-    profiles: Array.isArray(config?.profiles) ? config.profiles : []
+    [RCLONE_CONFIG_PASSWORD_KEY]: typeof config?.[RCLONE_CONFIG_PASSWORD_KEY] === "string" ? config[RCLONE_CONFIG_PASSWORD_KEY] : undefined,
+    settings: normalizeSettings(settings),
+    profiles: Array.isArray(config?.profiles) ? config.profiles.map(normalizeStoredProfile) : []
+  };
+}
+
+function rcloneConfigPassword() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("System credential storage is unavailable, so Rclone credentials cannot be stored securely.");
+  }
+
+  const config = readConfig();
+  const encryptedPassword = config[RCLONE_CONFIG_PASSWORD_KEY];
+  if (encryptedPassword) {
+    try {
+      return safeStorage.decryptString(Buffer.from(encryptedPassword, "base64"));
+    } catch {
+      throw new Error("The stored Rclone credential key could not be read. Reconnect the Rclone account before using it.");
+    }
+  }
+
+  const password = crypto.randomBytes(48).toString("base64url");
+  writeConfig({
+    ...config,
+    [RCLONE_CONFIG_PASSWORD_KEY]: safeStorage.encryptString(password).toString("base64")
+  });
+  return password;
+}
+
+function envWithRcloneConfigPassword(env = process.env) {
+  return {
+    ...env,
+    RCLONE_CONFIG_PASS: rcloneConfigPassword(),
+    RCLONE_ASK_PASSWORD: "false"
+  };
+}
+
+function rcloneProcessOptions(options = {}) {
+  return {
+    ...options,
+    env: envWithRcloneConfigPassword(options.env ?? process.env)
+  };
+}
+
+function normalizeSettings(settings) {
+  const defaultExcludes = normalizeDefaultExcludePatterns(settings.defaultExcludes);
+  return {
+    ...settings,
+    defaultExcludes
+  };
+}
+
+function normalizeDefaultExcludePatterns(value) {
+  if (value === undefined) return DEFAULT_EXCLUDES;
+  const patterns = normalizeExcludePatterns(value)
+    .map((pattern) => {
+      if (pattern === "**/*.pyc") return "*.pyc";
+      if (pattern === "**/*.pyo") return "*.pyo";
+      if (pattern === "**/*.egg-info/") return "*.egg-info/";
+      return pattern;
+    });
+  const looksLikeOldDefaults = OLD_DEFAULT_EXCLUDE_MARKERS.every((pattern) => patterns.includes(pattern));
+  return looksLikeOldDefaults
+    ? patterns.filter((pattern) => !OLD_DEFAULT_DATA_EXCLUDES.includes(pattern))
+    : patterns;
+}
+
+function normalizeStoredProfile(profile) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) return profile;
+  return {
+    ...profile,
+    excludes: normalizeExcludePatterns(profile.excludes)
   };
 }
 
@@ -1114,6 +1264,130 @@ function readJsonFile(filePath, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function failureNotificationHistoryPath() {
+  return path.join(app.getPath("userData"), FAILURE_NOTIFICATION_HISTORY_FILE);
+}
+
+function notificationLogPath() {
+  return path.join(app.getPath("userData"), NOTIFICATION_LOG_FILE);
+}
+
+function todayKey() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+function readFailureNotificationHistory() {
+  const history = readJsonFile(failureNotificationHistoryPath(), {});
+  return history && typeof history === "object" && !Array.isArray(history) ? history : {};
+}
+
+function writeFailureNotificationHistory(history) {
+  fs.mkdirSync(path.dirname(failureNotificationHistoryPath()), { recursive: true });
+  fs.writeFileSync(failureNotificationHistoryPath(), JSON.stringify(history, null, 2));
+}
+
+function readNotificationLog() {
+  const logItems = readJsonFile(notificationLogPath(), []);
+  return Array.isArray(logItems)
+    ? logItems
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        id: String(item.id ?? crypto.randomUUID()),
+        key: String(item.key ?? ""),
+        title: String(item.title ?? "Notification"),
+        body: String(item.body ?? ""),
+        createdAt: String(item.createdAt ?? new Date().toISOString())
+      }))
+    : [];
+}
+
+function writeNotificationLog(logItems) {
+  fs.mkdirSync(path.dirname(notificationLogPath()), { recursive: true });
+  fs.writeFileSync(notificationLogPath(), JSON.stringify(logItems, null, 2));
+}
+
+function appendNotificationLog(item) {
+  const logItems = readNotificationLog();
+  writeNotificationLog([
+    {
+      id: crypto.randomUUID(),
+      key: String(item.key ?? ""),
+      title: String(item.title ?? "Notification"),
+      body: String(item.body ?? ""),
+      createdAt: new Date().toISOString()
+    },
+    ...logItems
+  ]);
+}
+
+function listNotificationLog() {
+  return readNotificationLog().sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+}
+
+function shouldShowFailureNotification(key) {
+  const today = todayKey();
+  const history = readFailureNotificationHistory();
+  if (history[key] === today) return false;
+
+  const pruned = Object.fromEntries(Object.entries(history).filter(([, date]) => date === today));
+  pruned[key] = today;
+  writeFailureNotificationHistory(pruned);
+  return true;
+}
+
+function showFailureNotificationOnce(key, title, body) {
+  try {
+    if (typeof Notification.isSupported !== "function" || !Notification.isSupported() || !shouldShowFailureNotification(key)) return;
+    const notificationBody = String(body ?? "").slice(0, 180);
+    new Notification({
+      title,
+      body: notificationBody
+    }).show();
+    appendNotificationLog({ key, title, body: notificationBody });
+  } catch (error) {
+    log.warn("Failure notification could not be shown", error);
+  }
+}
+
+function notifyBackupFailure(profile, error) {
+  const profileId = String(profile?.id ?? "");
+  if (!profileId) return;
+  const name = String(profile?.name ?? "").trim() || "Backup";
+  showFailureNotificationOnce(
+    `backup:${profileId}`,
+    `Backup failed: ${name}`,
+    errorOutput(error).trim() || "The backup could not finish."
+  );
+}
+
+function notifyRestoreFailure(options, error) {
+  let repository;
+  try {
+    repository = normalizeRestoreRepository(options?.repository);
+  } catch {
+    repository = {
+      type: String(options?.repository?.type ?? ""),
+      target: String(options?.repository?.target ?? "")
+    };
+  }
+  const snapshotId = String(options?.snapshotId ?? "").trim();
+  const target = String(options?.target ?? "").trim();
+  const paths = Array.isArray(options?.paths) ? options.paths.map(String).sort() : [];
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ repository, snapshotId, target, paths }))
+    .digest("hex")
+    .slice(0, 16);
+  showFailureNotificationOnce(
+    `restore:${fingerprint}`,
+    "Restore failed",
+    `Restore to ${target || "the selected location"} could not finish. ${errorOutput(error).trim() || ""}`.trim()
+  );
 }
 
 function readConfig() {
@@ -1144,6 +1418,15 @@ function writeSettings(settings) {
     ...config,
     settings
   });
+}
+
+function saveBackupDefaults(settings) {
+  const nextSettings = {
+    ...readSettings(),
+    defaultExcludes: normalizeExcludePatterns(settings?.defaultExcludes)
+  };
+  writeSettings(nextSettings);
+  return readSettings();
 }
 
 function getAutoUpdatesEnabled() {
@@ -1204,7 +1487,10 @@ async function restoreConfig() {
 
 function sanitizeProfileForRenderer(profile) {
   const { encryptedPassword, password, passwordConfirm, currentPassword, ...rest } = profile;
-  return rest;
+  return {
+    ...rest,
+    excludes: normalizeExcludeText(rest.excludes)
+  };
 }
 
 function getStoredPassword(profileId) {
@@ -1252,15 +1538,23 @@ function saveProfile(profile) {
   const nextPassword = String(profile.password ?? "");
   const passwordConfirm = String(profile.passwordConfirm ?? "");
   const currentPassword = String(profile.currentPassword ?? "");
+  const restoringProfile = Boolean(existing?.reviewRequired);
 
   if (!existing && !nextPassword) throw new Error("Enter and confirm the backup password.");
   if (nextPassword && nextPassword !== passwordConfirm) throw new Error("Backup passwords do not match.");
-  if (existing && nextPassword) verifyCurrentProfilePassword(existing, currentPassword);
+  if (existing && restoringProfile) {
+    if (nextPassword) throw new Error("Enter the existing backup password to finish restoring this backup.");
+    if (!currentPassword) throw new Error("Enter the backup password to finish restoring this backup.");
+    if (currentPassword !== passwordConfirm) throw new Error("Backup passwords do not match.");
+  } else if (existing && nextPassword) {
+    verifyCurrentProfilePassword(existing, currentPassword);
+  }
 
   let encryptedPassword = existing?.encryptedPassword;
-  if (nextPassword && safeStorage.isEncryptionAvailable()) {
+  const passwordToStore = nextPassword || (restoringProfile ? currentPassword : "");
+  if (passwordToStore && safeStorage.isEncryptionAvailable()) {
     try {
-      encryptedPassword = safeStorage.encryptString(nextPassword).toString("base64");
+      encryptedPassword = safeStorage.encryptString(passwordToStore).toString("base64");
     } catch { /* non-fatal */ }
   }
 
@@ -1268,11 +1562,12 @@ function saveProfile(profile) {
     ...profile,
     encryptionEnabled: true,
     id: existing?.id ?? crypto.randomUUID(),
-    passwordSet: Boolean(nextPassword) || Boolean(existing?.passwordSet),
+    passwordSet: Boolean(passwordToStore) || Boolean(existing?.passwordSet),
     password: undefined,
     passwordConfirm: undefined,
     currentPassword: undefined,
     encryptedPassword,
+    excludes: normalizeExcludePatterns(profile.excludes),
     schedulePaused: Boolean(profile.schedulePaused ?? existing?.schedulePaused),
     reviewRequired: false,
     lastBackupStartedAt: existing?.lastBackupStartedAt,
@@ -1283,6 +1578,19 @@ function saveProfile(profile) {
   else profiles.push(saved);
   writeProfiles(profiles);
   return profiles.map(sanitizeProfileForRenderer);
+}
+
+function normalizeExcludePatterns(value) {
+  const rawPatterns = Array.isArray(value)
+    ? value
+    : String(value ?? "").split(/\r?\n/);
+  return rawPatterns
+    .map((pattern) => String(pattern).trim())
+    .filter((pattern) => pattern && pattern !== "*.");
+}
+
+function normalizeExcludeText(value) {
+  return normalizeExcludePatterns(value).join("\n");
 }
 
 function verifyCurrentProfilePassword(existing, currentPassword) {
@@ -1343,7 +1651,7 @@ async function deleteRepositoryForProfile(profile) {
     const rcloneTarget = rcloneTargetFromResticTarget(target);
     if (!rcloneTarget) throw new Error("This Rclone repository location could not be parsed.");
     try {
-      await runProcess(rclone.path, ["purge", rcloneTarget], { timeoutMs: 5 * 60 * 1000 });
+      await runProcess(rclone.path, ["purge", rcloneTarget], rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 }));
     } catch (error) {
       if (!/not found|directory not found|object not found/i.test(errorOutput(error))) throw error;
     }
@@ -1460,6 +1768,9 @@ async function startRestore(options) {
   activeRestoreRunCount += 1;
   try {
     return await runRestore(options);
+  } catch (error) {
+    notifyRestoreFailure(options, error);
+    throw error;
   } finally {
     activeRestoreRunCount = Math.max(0, activeRestoreRunCount - 1);
     installPendingUpdateWhenIdle();
@@ -1524,7 +1835,7 @@ async function resticEnvironmentForRepository(repository, password) {
   if (repository.type === "rclone") {
     const rclone = await findRclone();
     if (!rclone?.path) throw new Error("Rclone is not installed.");
-    env = envWithToolDirectory(env, rclone.path);
+    env = envWithRcloneConfigPassword(envWithToolDirectory(env, rclone.path));
   }
   return env;
 }
@@ -1698,6 +2009,9 @@ async function startBackup(profile, password) {
   const runState = {
     running: true,
     percentComplete: 0,
+    bytesDone: null,
+    totalBytes: null,
+    estimatedSecondsRemaining: null,
     progressLabel: "Preparing backup...",
     startedAt: new Date().toISOString(),
     pid: null,
@@ -1722,7 +2036,7 @@ async function startBackup(profile, password) {
 
     if (profile.repository.type === "rclone") {
       const rclone = await findRclone();
-      if (rclone?.path) env = envWithToolDirectory(env, rclone.path);
+      if (rclone?.path) env = envWithRcloneConfigPassword(envWithToolDirectory(env, rclone.path));
     }
 
     await ensureResticRepository(restic.path, profile.repository.target, env, trackResticChild);
@@ -1742,7 +2056,8 @@ async function startBackup(profile, password) {
     runState.progressLabel = "Starting backup...";
     runState.pid = null;
     runState.child = null;
-    const args = ["--json", ...resticRepositoryArgs(profile.repository), "backup", ...profile.sources];
+    const excludeArgs = normalizeExcludePatterns(profile.excludes).flatMap((pattern) => ["--exclude", pattern]);
+    const args = ["--json", ...resticRepositoryArgs(profile.repository), "backup", ...excludeArgs, ...profile.sources];
     child = childProcess.spawn(restic.path, args, { env, windowsHide: true });
     runState.pid = child.pid ?? null;
     runState.child = child;
@@ -1760,6 +2075,7 @@ async function startBackup(profile, password) {
       progressLabel: runState.stopRequested ? "Backup stopped." : error instanceof Error ? error.message : String(error),
       errorDetails: runState.stopRequested ? null : backupErrorDetails(error)
     });
+    if (!runState.stopRequested) notifyBackupFailure(profile, error);
     installPendingUpdateWhenIdle();
     if (runState.stopRequested) return getBackupStatus();
     throw error;
@@ -1791,6 +2107,7 @@ async function startBackup(profile, password) {
       progressLabel: runState.stopRequested ? "Backup stopped." : error instanceof Error ? error.message : String(error),
       errorDetails: runState.stopRequested ? null : backupErrorDetails(error)
     });
+    if (!runState.stopRequested) notifyBackupFailure(profile, error);
     installPendingUpdateWhenIdle();
   });
 
@@ -1817,6 +2134,7 @@ async function startBackup(profile, password) {
         : failureMessage,
       errorDetails: runState.stopRequested || code === 0 ? null : backupErrorDetails(failureMessage)
     });
+    if (!runState.stopRequested && code !== 0) notifyBackupFailure(profile, failureMessage);
     installPendingUpdateWhenIdle();
   });
 
@@ -1886,6 +2204,7 @@ async function retryNetworkBackup(profileId) {
       stopRequested: false,
       stderr: ""
     });
+    notifyBackupFailure(profile, error);
     installPendingUpdateWhenIdle();
   }
 }
@@ -2093,9 +2412,13 @@ function updateBackupProgressFromLine(profileId, line) {
     const message = JSON.parse(trimmed);
     if (message.message_type !== "status") return;
 
-    const percent = typeof message.percent_done === "number" ? Math.round(message.percent_done * 100) : null;
+    const percentDone = typeof message.percent_done === "number" ? message.percent_done : null;
+    const percent = percentDone !== null ? Math.round(percentDone * 100) : null;
     const filesDone = Number(message.files_done ?? 0);
     const totalFiles = Number(message.total_files ?? 0);
+    const bytesDone = positiveNumberOrNull(message.bytes_done);
+    const totalBytes = positiveNumberOrNull(message.total_bytes);
+    const estimatedSecondsRemaining = estimateBackupSecondsRemaining(activeBackupRuns.get(profileId), message, percentDone, bytesDone, totalBytes);
     const progressLabel = totalFiles > 0
       ? `${filesDone} of ${totalFiles} files processed.`
       : "Backup is running.";
@@ -2104,11 +2427,42 @@ function updateBackupProgressFromLine(profileId, line) {
       ...(activeBackupRuns.get(profileId) ?? {}),
       running: true,
       percentComplete: percent,
+      bytesDone,
+      totalBytes,
+      estimatedSecondsRemaining,
       progressLabel
     });
   } catch {
     // Restic can emit non-JSON warnings alongside JSON status.
   }
+}
+
+function positiveNumberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function estimateBackupSecondsRemaining(runState, message, percentDone, bytesDone, totalBytes) {
+  const resticEstimate = positiveNumberOrNull(message.seconds_remaining);
+  if (resticEstimate !== null) return resticEstimate;
+
+  const elapsedFromStart = runState?.startedAt
+    ? positiveNumberOrNull((Date.now() - Date.parse(runState.startedAt)) / 1000)
+    : null;
+  const elapsed = positiveNumberOrNull(message.seconds_elapsed)
+    ?? elapsedFromStart;
+  if (elapsed === null || elapsed < 5) return null;
+
+  if (bytesDone !== null && totalBytes !== null && bytesDone < totalBytes) {
+    const bytesPerSecond = bytesDone / elapsed;
+    return bytesPerSecond > 0 ? (totalBytes - bytesDone) / bytesPerSecond : null;
+  }
+
+  if (percentDone !== null && percentDone > 0 && percentDone < 1) {
+    return elapsed * ((1 - percentDone) / percentDone);
+  }
+
+  return null;
 }
 
 async function analyzeBackupLocation(targetPath) {
@@ -2175,7 +2529,10 @@ async function getBackupStatus() {
     running,
     processCount: Math.max(processes.length, runningEntries.length),
     profileIds: [...new Set([...observedProfileIds, ...activeProfileIds, ...waitingEntries.map(([profileId]) => profileId), ...(latestProfileId ? [latestProfileId] : [])])],
-    percentComplete: typeof latestState?.percentComplete === "number" ? latestState.percentComplete : null,
+    percentComplete: Number.isFinite(latestState?.percentComplete) ? latestState.percentComplete : null,
+    bytesDone: Number.isFinite(latestState?.bytesDone) ? latestState.bytesDone : null,
+    totalBytes: Number.isFinite(latestState?.totalBytes) ? latestState.totalBytes : null,
+    estimatedSecondsRemaining: Number.isFinite(latestState?.estimatedSecondsRemaining) ? latestState.estimatedSecondsRemaining : null,
     progressLabel: latestState?.progressLabel ?? (processes.length > 0
       ? "Restic is running. Percent complete is unavailable for externally launched backups."
       : "No backup is running."),
