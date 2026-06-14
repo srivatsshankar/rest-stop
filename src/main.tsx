@@ -104,6 +104,7 @@ type BackupProfile = {
   retention: RetentionPolicy;
   lastBackupStartedAt?: string;
   lastBackupCompletedAt?: string;
+  pendingBackupStartedAt?: string;
   createdAt: string;
 };
 
@@ -250,6 +251,8 @@ type ReststopBridge = {
   setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
   exportConfig: () => Promise<{ cancelled: boolean; path?: string }>;
   restoreConfig: () => Promise<{ cancelled: boolean; path?: string; profiles?: BackupProfile[]; settings?: AppSettings }>;
+  exportBackupConfig: (profileId: string) => Promise<{ cancelled: boolean; path?: string }>;
+  loadBackupConfig: () => Promise<{ cancelled: boolean; path?: string; profile?: BackupProfile; profiles?: BackupProfile[] }>;
   listNotifications: () => Promise<AppNotification[]>;
   setTaskbarStatus: (status: TaskbarStatus) => Promise<void>;
   minimizeWindow: () => Promise<void>;
@@ -348,6 +351,8 @@ const fallbackBridge: ReststopBridge = {
   setAutoUpdatesEnabled: async (enabled) => enabled,
   exportConfig: async () => ({ cancelled: true }),
   restoreConfig: async () => ({ cancelled: true }),
+  exportBackupConfig: async () => ({ cancelled: true }),
+  loadBackupConfig: async () => ({ cancelled: true }),
   listNotifications: async () => [],
   setTaskbarStatus: async () => undefined,
   minimizeWindow: async () => undefined,
@@ -424,8 +429,12 @@ function defaultRcloneRepositoryPath(name: string) {
   return `reststop/${slugifyBackupName(name)}`;
 }
 
-function defaultRcloneRemoteName(name: string) {
-  return slugifyBackupName(name);
+function defaultRcloneRemoteName(name: string, backend: RcloneBackend) {
+  return `reststop-${slugifyBackupName(name)}-${backend}`;
+}
+
+function backupNameKey(name: string) {
+  return name.trim().toLowerCase();
 }
 
 function getRcloneBackendLabel(backend?: RcloneBackend) {
@@ -495,6 +504,19 @@ function normalizeRemotePathInput(value: string) {
 
 function joinRemotePath(parentPath: string, childName: string) {
   return [normalizeRemotePathInput(parentPath), normalizeRemotePathInput(childName)].filter(Boolean).join("/");
+}
+
+function bridgeErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return message
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim() || fallback;
+}
+
+function isRcloneRemoteNotConnectedMessage(message: string) {
+  return /Rclone account ".+" is not connected on this computer/i.test(message)
+    || /didn'?t find section in config file/i.test(message);
 }
 
 const defaultSchedule: BackupSchedule = { mode: "manual", every: 1, unit: "hours" };
@@ -816,9 +838,44 @@ function App() {
     }
   }
 
+  async function handleExportBackupConfig(profile: BackupProfile) {
+    setConfigMessage("");
+    try {
+      const result = await bridge.exportBackupConfig(profile.id);
+      if (!result.cancelled) setConfigMessage(`Backup config saved to ${result.path}.`);
+    } catch (error) {
+      setConfigMessage(error instanceof Error ? error.message : "Unable to save this backup config.");
+    }
+  }
+
+  async function handleLoadBackupConfig() {
+    setConfigMessage("");
+    try {
+      const result = await bridge.loadBackupConfig();
+      if (result.cancelled) return;
+      const loadedProfiles = result.profiles ?? [];
+      const loadedProfile = result.profile ?? loadedProfiles.find((profile) => profile.reviewRequired);
+      setProfiles(loadedProfiles);
+      setVersionCounts({});
+      if (loadedProfile) {
+        setEditingProfile(loadedProfile);
+        setExpandedProfileId(loadedProfile.id);
+      }
+      setConfigMessage(`Backup loaded from ${result.path}. Confirm its password, sources, and backup location before running it.`);
+      navigateTo("backup");
+    } catch (error) {
+      setConfigMessage(error instanceof Error ? error.message : "Unable to load the backup config.");
+    }
+  }
+
   async function refreshBackupStatus() {
     try {
-      setBackupStatus(await bridge.getBackupStatus());
+      const [status, savedProfiles] = await Promise.all([
+        bridge.getBackupStatus(),
+        bridge.getProfiles()
+      ]);
+      setBackupStatus(status);
+      setProfiles(savedProfiles);
     } catch {
       setBackupStatus((current) => ({
         ...current,
@@ -1166,6 +1223,9 @@ function App() {
                     <button className="menu-item" onClick={() => { navigateTo("restore"); setMenuOpen(false); }}>
                       <FontAwesomeIcon icon={faCloudArrowDown} /> Restore backup
                     </button>
+                    <button className="menu-item" onClick={() => { handleLoadBackupConfig(); setMenuOpen(false); }}>
+                      <FontAwesomeIcon icon={faArrowUp} /> Load backup
+                    </button>
                   </div>
                 ) : null}
               </div>
@@ -1204,6 +1264,7 @@ function App() {
               <BackupWizard
                 key={editingProfile?.id ?? "new"}
                 initialProfile={editingProfile}
+                profiles={profiles}
                 defaultExcludes={defaultExcludes}
                 onCancel={goBack}
                 onSave={handleSave}
@@ -1216,6 +1277,7 @@ function App() {
                   runs={restoreRuns}
                   onDismiss={(runId) => setRestoreRuns((current) => current.filter((run) => run.id !== runId))}
                 />
+                {configMessage ? <p className="setup-status">{configMessage}</p> : null}
                 {profiles.length === 0 ? (
                   <EmptyState onCreate={openCreateBackup} onRestore={() => navigateTo("restore")} />
                 ) : (
@@ -1231,6 +1293,7 @@ function App() {
                     onStop={handleStopBackup}
                     onPause={handlePauseProfile}
                     onDelete={openDeleteBackup}
+                    onExportConfig={handleExportBackupConfig}
                   />
                 )}
               </div>
@@ -1596,7 +1659,8 @@ function BackupList({
   onStart,
   onStop,
   onPause,
-  onDelete
+  onDelete,
+  onExportConfig
 }: {
   profiles: BackupProfile[];
   backupStatus: BackupRunStatus;
@@ -1609,6 +1673,7 @@ function BackupList({
   onStop: (profile: BackupProfile) => void;
   onPause: (profile: BackupProfile, schedulePaused: boolean) => void;
   onDelete: (profile: BackupProfile) => void;
+  onExportConfig: (profile: BackupProfile) => void;
 }) {
   return (
     <section className="backup-list">
@@ -1623,6 +1688,7 @@ function BackupList({
         const isProfileSchedulePaused = profile.schedule.mode === "recurring" && Boolean(profile.schedulePaused);
         const isSchedulePaused = profile.schedule.mode === "recurring" && (globalSchedulePaused || Boolean(profile.schedulePaused));
         const reviewRequired = Boolean(profile.reviewRequired);
+        const retryPending = hasPendingBackup(profile);
         const versionCount: BackupVersionCount = reviewRequired ? { status: "pending" } : versionCounts[profile.id] ?? { status: "loading" };
         const statusLabel = isProfileRunning
           ? "Running"
@@ -1630,15 +1696,15 @@ function BackupList({
             ? "Failed"
           : isProfileWaiting
             ? "Waiting for network"
+          : retryPending
+            ? "Retry pending"
           : reviewRequired
             ? "Review required"
-          : backupStatus.running
-            ? "Another backup is running"
-            : globalSchedulePaused && profile.schedule.mode === "recurring"
-              ? "Schedule paused globally"
-              : isProfileSchedulePaused
-                ? "Schedule paused"
-                : "Idle";
+          : globalSchedulePaused && profile.schedule.mode === "recurring"
+            ? "Schedule paused globally"
+            : isProfileSchedulePaused
+              ? "Schedule paused"
+              : "Idle";
         const pauseLabel = profile.schedulePaused ? "Resume schedule" : "Pause schedule";
         const frequencyLabel = isSchedulePaused ? `${formatSchedule(profile.schedule)} (paused)` : formatSchedule(profile.schedule);
 
@@ -1681,7 +1747,7 @@ function BackupList({
                     [faCalendarDays, "Retention", formatRetention(profile.retention)]
                   ]}
                 />
-                <BackupProgress status={backupStatus} isProfileRunning={profileHasStatus} />
+                <BackupProgress status={backupStatus} hasProfileStatus={profileHasStatus} />
                 {backupError ? <BackupErrorDetails details={backupError} /> : null}
                 {reviewRequired ? <BackupReviewNotice /> : null}
                 <div className="backup-detail-actions">
@@ -1696,6 +1762,9 @@ function BackupList({
                   </button>
                   <button className="secondary-button justify-center" disabled={reviewRequired} onClick={() => onPause(profile, !profile.schedulePaused)}>
                     <FontAwesomeIcon icon={profile.schedulePaused ? faPlay : faPause} /> {profile.schedulePaused ? "Resume" : "Pause"}
+                  </button>
+                  <button className="secondary-button justify-center" onClick={() => onExportConfig(profile)}>
+                    <FontAwesomeIcon icon={faArrowDown} /> Download config
                   </button>
                   <button className="primary-button justify-center" disabled={isProfileActive || reviewRequired} onClick={() => onStart(profile)}>
                     <FontAwesomeIcon icon={faRepeat} /> Run
@@ -1751,14 +1820,14 @@ function BackupProgressLine({ status, active }: { status: BackupRunStatus; activ
   );
 }
 
-function BackupProgress({ status, isProfileRunning }: { status: BackupRunStatus; isProfileRunning: boolean }) {
-  const percent = status.running && typeof status.percentComplete === "number" ? Math.max(0, Math.min(status.percentComplete, 100)) : null;
-  const isRelevant = isProfileRunning || (status.running && status.profileIds.length === 0);
-  const hasProfileMessage = !status.running && isProfileRunning && status.progressLabel !== "No backup is running.";
-  const isWaiting = isBackupWaitingForNetwork(status);
-  const percentLabel = isWaiting ? "Waiting" : !status.running ? "No backup running" : percent === null ? "Unknown" : `${Math.round(percent)}%`;
-  const percentLabelClass = `backup-progress-value ${status.running ? "running" : "idle"}`;
-  const showDetails = status.running && isRelevant;
+function BackupProgress({ status, hasProfileStatus }: { status: BackupRunStatus; hasProfileStatus: boolean }) {
+  const profileIsRunning = status.running && hasProfileStatus;
+  const percent = profileIsRunning && typeof status.percentComplete === "number" ? Math.max(0, Math.min(status.percentComplete, 100)) : null;
+  const hasProfileMessage = !status.running && hasProfileStatus && status.progressLabel !== "No backup is running.";
+  const isWaiting = hasProfileStatus && isBackupWaitingForNetwork(status);
+  const percentLabel = isWaiting ? "Waiting" : !profileIsRunning ? "No backup running" : percent === null ? "Unknown" : `${Math.round(percent)}%`;
+  const percentLabelClass = `backup-progress-value ${profileIsRunning ? "running" : "idle"}`;
+  const showDetails = profileIsRunning;
   const totalSizeLabel = showDetails && typeof status.totalBytes === "number" && status.totalBytes > 0
     ? formatBytes(status.totalBytes)
     : null;
@@ -1767,16 +1836,14 @@ function BackupProgress({ status, isProfileRunning }: { status: BackupRunStatus;
     : null;
   const label = hasProfileMessage
     ? status.progressLabel
-    : !status.running
+    : !profileIsRunning
       ? "No backup running"
-    : isRelevant
-      ? status.progressLabel
-      : "A different backup is running.";
+      : status.progressLabel;
 
   return (
     <div className="backup-detail-row backup-progress-section">
       <dt>
-        <FontAwesomeIcon className={`backup-detail-icon ${status.running ? "animate-spin" : ""}`} icon={faRotateRight} />
+        <FontAwesomeIcon className={`backup-detail-icon ${profileIsRunning ? "animate-spin" : ""}`} icon={faRotateRight} />
         <span>Progress</span>
       </dt>
       <dd>
@@ -1785,7 +1852,7 @@ function BackupProgress({ status, isProfileRunning }: { status: BackupRunStatus;
           <span className={percentLabelClass}>{percentLabel}</span>
         </div>
         <div className="progress-track" aria-label="Backup progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} role="progressbar">
-          <div className={`progress-fill ${status.running && percent === null ? "indeterminate" : ""}`} style={{ width: `${percent ?? 0}%` }} />
+          <div className={`progress-fill ${profileIsRunning && percent === null ? "indeterminate" : ""}`} style={{ width: `${percent ?? 0}%` }} />
         </div>
         {(totalSizeLabel || timeRemainingLabel) ? (
           <div className="backup-progress-metadata">
@@ -1865,9 +1932,10 @@ function isBackupWaitingForNetwork(status: BackupRunStatus) {
 
 function formatNextRun(_profile: BackupProfile, globalSchedulePaused = false) {
   const profile = normalizeProfile(_profile);
-  if (profile.schedule.mode === "manual") return "On demand";
   if (globalSchedulePaused) return "Paused globally";
   if (profile.schedulePaused) return "Paused";
+  if (hasPendingBackup(profile)) return "Retry pending";
+  if (profile.schedule.mode === "manual") return "On demand";
 
   const nextRun = getNextRunDate(profile.createdAt, profile.schedule);
   if (!nextRun) return formatSchedule(profile.schedule);
@@ -1906,11 +1974,19 @@ function getNextRunDate(createdAt: string, schedule: BackupSchedule) {
 }
 
 function isScheduledBackupDue(profile: BackupProfile, now = new Date()) {
-  if (profile.schedule.mode !== "recurring" || profile.schedulePaused || profile.reviewRequired) return false;
+  if (profile.schedulePaused || profile.reviewRequired) return false;
+  if (hasPendingBackup(profile)) return true;
+  if (profile.schedule.mode !== "recurring") return false;
   const dueRun = getLatestDueRunDate(profile.createdAt, profile.schedule, now);
   if (!dueRun) return false;
+  const lastCompleted = parseStoredDate(profile.lastBackupCompletedAt);
+  if (lastCompleted && lastCompleted.getTime() >= dueRun.getTime()) return false;
   const lastStarted = parseStoredDate(profile.lastBackupStartedAt);
   return !lastStarted || lastStarted.getTime() < dueRun.getTime();
+}
+
+function hasPendingBackup(profile: BackupProfile) {
+  return Boolean(parseStoredDate(profile.pendingBackupStartedAt));
 }
 
 function getLatestDueRunDate(createdAt: string, schedule: BackupSchedule, now = new Date()) {
@@ -2173,11 +2249,13 @@ function locationOptionFromProfile(profile: BackupProfile | null): LocationOptio
 
 function BackupWizard({
   initialProfile,
+  profiles,
   defaultExcludes,
   onCancel,
   onSave
 }: {
   initialProfile: BackupProfile | null;
+  profiles: BackupProfile[];
   defaultExcludes: string;
   onCancel: () => void;
   onSave: (profile: DraftProfile) => Promise<void>;
@@ -2241,9 +2319,12 @@ function BackupWizard({
     : editingBackup
     ? passwordFieldsTouched && !passwordFormComplete
     : Boolean(draft.passwordConfirm) && !passwordFormComplete;
-  const detailsComplete = draft.name.trim().length > 0 && passwordFormComplete;
-  const rcloneAccountConnected = rcloneSetup.status === "success" || editingRcloneBackup;
-  const rcloneReviewComplete = draft.repository.type !== "rclone" || rcloneAccountConnected;
+  const duplicateBackupName = draft.name.trim().length > 0 && profiles.some((profile) => profile.id !== initialProfile?.id && backupNameKey(profile.name) === backupNameKey(draft.name));
+  const detailsComplete = draft.name.trim().length > 0 && !duplicateBackupName && passwordFormComplete;
+  const rcloneAccountConnected = rcloneSetup.status === "success";
+  const rcloneFolderBrowserAvailable = rcloneAccountConnected;
+  const rcloneExistingLocationReady = editingRcloneBackup && !restoringImportedBackup && rcloneSetup.status !== "error";
+  const rcloneReviewComplete = draft.repository.type !== "rclone" || rcloneAccountConnected || rcloneExistingLocationReady;
   const locationComplete = draft.repository.target.trim().length > 0 && rcloneReviewComplete;
   const canContinue = useMemo(() => {
     if (step === 0) return detailsComplete;
@@ -2260,7 +2341,7 @@ function BackupWizard({
   ], [detailsComplete, draft, locationComplete]);
   const canSave = stepRequirements.every(Boolean);
   const weeklySchedule = draft.schedule.mode === "recurring" && draft.schedule.unit === "weeks" && draft.schedule.every === 1;
-  const rcloneRemoteName = initialProfile?.repository.rcloneRemoteName ?? defaultRcloneRemoteName(draft.name);
+  const rcloneRemoteName = initialProfile?.repository.rcloneRemoteName ?? defaultRcloneRemoteName(draft.name, rcloneBackend);
   const suggestedRcloneFolderName = slugifyBackupName(draft.name);
   const highestSelectableStep = useMemo(() => {
     let highest = 0;
@@ -2342,32 +2423,31 @@ function BackupWizard({
     }));
   }
 
-  async function connectRcloneRepository(replaceRemote = false) {
+  async function connectRcloneRepository() {
     setRcloneSetup({
       status: "working",
-      message: replaceRemote
-        ? selectedRcloneOption.auth === "oauth"
-          ? "Starting account authorization..."
-          : "Updating backend account..."
-        : selectedRcloneOption.auth === "oauth"
-          ? "Starting browser authorization..."
-          : "Connecting Rclone..."
+      message: selectedRcloneOption.auth === "oauth"
+        ? "Starting account authorization..."
+        : "Updating backend account..."
     });
     try {
       const result = await bridge.connectRcloneAccount({
         backend: rcloneBackend,
         remoteName: rcloneRemoteName,
         config: rcloneConfig,
-        replaceRemote
+        replaceRemote: true
       });
       const normalizedPath = normalizeRemotePathInput(rcloneRepositoryPath);
 
-      setDraft((current) => ({
-        ...current,
-        repository: normalizedPath ? rcloneRepository(result.remoteName, result.backend, normalizedPath) : { type: "rclone", target: "" }
-      }));
-      setRcloneRepositoryPath(normalizedPath || rcloneRepositoryPath);
-      setRclonePathTouched(true);
+      if (rclonePathTouched && normalizedPath) {
+        setDraft((current) => ({
+          ...current,
+          repository: rcloneRepository(result.remoteName, result.backend, normalizedPath)
+        }));
+        setRcloneRepositoryPath(normalizedPath);
+      } else {
+        setDraft((current) => ({ ...current, repository: { type: "rclone", target: "" } }));
+      }
       setRcloneSetup({ status: "success", message: result.message });
       setRcloneBrowserOpen(true);
     } catch (error) {
@@ -2447,6 +2527,7 @@ function BackupWizard({
           <Field label="Backup name">
             <input className="text-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Family photos" />
           </Field>
+          {duplicateBackupName ? <p className="setup-status error">A backup with this name already exists. Choose a unique backup name.</p> : null}
           <Field label="Description">
             <textarea className="text-input min-h-24" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="What this backup protects" />
           </Field>
@@ -2571,40 +2652,6 @@ function BackupWizard({
             </button>
           ) : draft.repository.type === "rclone" ? (
             <>
-              <div className="grid gap-3">
-                <Field label={selectedRcloneOption.pathLabel}>
-                  <div className="input-with-action">
-                    <input
-                      className="text-input"
-                      value={rcloneRepositoryPath}
-                      onChange={(event) => {
-                        applyRcloneRepositoryPath(event.target.value);
-                      }}
-                      placeholder={defaultRcloneRepositoryPath(draft.name)}
-                    />
-                    <button
-                      aria-label="Choose remote folder"
-                      className="icon-button tooltip-button input-action-button"
-                      data-tooltip="Choose Remote Folder"
-                      type="button"
-                      disabled={!rcloneAccountConnected}
-                      onClick={() => setRcloneBrowserOpen(true)}
-                    >
-                      <FontAwesomeIcon icon={faFolderOpen} />
-                    </button>
-                  </div>
-                </Field>
-              </div>
-              {rcloneBrowserOpen ? (
-                <RcloneFolderBrowser
-                  remoteName={rcloneRemoteName}
-                  selectedPath={rcloneRepositoryPath}
-                  suggestedFolderName={suggestedRcloneFolderName}
-                  onSelect={(pathName) => {
-                    applyRcloneRepositoryPath(pathName);
-                  }}
-                />
-              ) : null}
               {rcloneFields.length > 0 ? (
                 <div className="grid gap-3 sm:grid-cols-2">
                   {rcloneFields.map((field) => (
@@ -2628,26 +2675,58 @@ function BackupWizard({
               {restoringImportedBackup && rcloneSetup.status !== "success" ? (
                 <p className="setup-status">Reconnect this backend account before continuing.</p>
               ) : null}
-              {editingRcloneBackup ? (
-                <button
-                  className="secondary-button justify-center"
-                  disabled={rcloneSetup.status === "working" || !rcloneFieldsComplete}
-                  onClick={() => connectRcloneRepository(true)}
-                >
-                  <FontAwesomeIcon className={rcloneSetup.status === "working" ? "animate-spin" : ""} icon={rcloneSetup.status === "working" ? faRotateRight : faKey} />
-                  Change backend account
-                </button>
-              ) : (
-                <button
-                  className="secondary-button justify-center"
-                  disabled={rcloneSetup.status === "working" || !rcloneFieldsComplete}
-                  onClick={() => connectRcloneRepository(false)}
-                >
-                  <FontAwesomeIcon className={rcloneSetup.status === "working" ? "animate-spin" : ""} icon={rcloneSetup.status === "working" ? faRotateRight : faKey} />
-                  {rcloneSetup.status === "working" ? "Connecting account" : "Connect account"}
-                </button>
-              )}
+              <button
+                className="secondary-button justify-center"
+                disabled={rcloneSetup.status === "working" || !rcloneFieldsComplete}
+                onClick={connectRcloneRepository}
+              >
+                <FontAwesomeIcon className={rcloneSetup.status === "working" ? "animate-spin" : ""} icon={rcloneSetup.status === "working" ? faRotateRight : faKey} />
+                {rcloneSetup.status === "working"
+                  ? "Connecting account"
+                  : editingRcloneBackup || rcloneSetup.status === "error" || rcloneAccountConnected
+                    ? "Reconnect backend account"
+                    : "Connect backend account"}
+              </button>
               {rcloneSetup.message ? <p className={`setup-status ${rcloneSetup.status}`}>{rcloneSetup.message}</p> : null}
+              <div className="grid gap-3">
+                <Field label={selectedRcloneOption.pathLabel}>
+                  <div className="input-with-action">
+                    <input
+                      className="text-input"
+                      disabled={!rcloneAccountConnected}
+                      value={rcloneRepositoryPath}
+                      onChange={(event) => {
+                        applyRcloneRepositoryPath(event.target.value);
+                      }}
+                      placeholder={defaultRcloneRepositoryPath(draft.name)}
+                    />
+                    <button
+                      aria-label="Choose remote folder"
+                      className="icon-button tooltip-button input-action-button"
+                      data-tooltip="Choose Remote Folder"
+                      type="button"
+                      disabled={!rcloneFolderBrowserAvailable}
+                      onClick={() => setRcloneBrowserOpen(true)}
+                    >
+                      <FontAwesomeIcon icon={faFolderOpen} />
+                    </button>
+                  </div>
+                </Field>
+              </div>
+              {rcloneBrowserOpen ? (
+                <RcloneFolderBrowser
+                  remoteName={rcloneRemoteName}
+                  selectedPath={rclonePathTouched ? rcloneRepositoryPath : ""}
+                  suggestedFolderName={suggestedRcloneFolderName}
+                  onReconnectRequired={(message) => {
+                    setRcloneBrowserOpen(false);
+                    setRcloneSetup({ status: "error", message });
+                  }}
+                  onSelect={(pathName) => {
+                    applyRcloneRepositoryPath(pathName);
+                  }}
+                />
+              ) : null}
             </>
           ) : (
             <Field label="Backup target">
@@ -2823,11 +2902,13 @@ function RcloneFolderBrowser({
   remoteName,
   selectedPath,
   suggestedFolderName,
+  onReconnectRequired,
   onSelect
 }: {
   remoteName: string;
   selectedPath: string;
   suggestedFolderName: string;
+  onReconnectRequired?: (message: string) => void;
   onSelect: (pathName: string) => void;
 }) {
   const [listing, setListing] = useState<DirectoryListing | null>(null);
@@ -2863,7 +2944,7 @@ function RcloneFolderBrowser({
       setExpanded({});
       setLoadingPaths({});
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Unable to open this remote folder.");
+      handleRcloneFolderError(loadError, "Unable to open this remote folder.");
     } finally {
       setLoadingRoot(false);
     }
@@ -2888,7 +2969,7 @@ function RcloneFolderBrowser({
       const nextListing = await bridge.listRcloneDirectory({ remoteName, path: entry.path });
       setExpanded((current) => ({ ...current, [entry.path]: nextListing }));
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Unable to open this remote folder.");
+      handleRcloneFolderError(loadError, "Unable to open this remote folder.");
     } finally {
       setLoadingPaths((current) => {
         const { [entry.path]: _done, ...remaining } = current;
@@ -2914,10 +2995,19 @@ function RcloneFolderBrowser({
       setExpanded({});
       selectFolder(nextListing.path);
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Unable to create this remote folder.");
+      handleRcloneFolderError(createError, "Unable to create this remote folder.");
     } finally {
       setLoadingRoot(false);
     }
+  }
+
+  function handleRcloneFolderError(error: unknown, fallback: string) {
+    const message = bridgeErrorMessage(error, fallback);
+    if (isRcloneRemoteNotConnectedMessage(message)) {
+      onReconnectRequired?.(message);
+      return;
+    }
+    setError(message);
   }
 
   if (!listing) {
@@ -3284,6 +3374,10 @@ function RestoreFlow({
                           remoteName={externalRcloneRemoteName}
                           selectedPath={externalRclonePath}
                           suggestedFolderName="backups"
+                          onReconnectRequired={(message) => {
+                            setExternalRcloneBrowserOpen(false);
+                            setExternalRcloneSetup({ status: "error", message });
+                          }}
                           onSelect={(pathName) => {
                             setExternalRclonePath(pathName);
                             setExternalRcloneBrowserOpen(false);
@@ -3554,12 +3648,27 @@ function BackupReview({ draft }: { draft: DraftProfile }) {
 }
 
 type ExclusionFilterKind = "extension" | "expression";
+type ExclusionEditorMode = "rows" | "text";
 
 function ExclusionFilterEditor({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   const rows = exclusionRowsFromText(value);
+  const [editorMode, setEditorMode] = useState<ExclusionEditorMode>("rows");
+  const [focusFirstRowToken, setFocusFirstRowToken] = useState(0);
+  const firstRowInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (focusFirstRowToken > 0) {
+      firstRowInputRef.current?.focus();
+    }
+  }, [focusFirstRowToken]);
 
   function updateRow(index: number, pattern: string) {
     onChange(rows.map((row, rowIndex) => rowIndex === index ? pattern : row).join("\n"));
+  }
+
+  function addRow() {
+    onChange(["", ...rows].join("\n"));
+    setFocusFirstRowToken((current) => current + 1);
   }
 
   function updateKind(index: number, kind: ExclusionFilterKind) {
@@ -3580,50 +3689,69 @@ function ExclusionFilterEditor({ label, value, onChange }: { label: string; valu
     <div className="filter-editor">
       <div className="filter-editor-heading">
         <span className="text-sm font-semibold text-ink/75">{label}</span>
-        <button className="small-button filter-add-button" type="button" onClick={() => onChange([...rows, ""].join("\n"))}>
-          <FontAwesomeIcon icon={faPlus} /> Add filter
-        </button>
+        <div className="filter-editor-actions">
+          <button className="small-button" type="button" onClick={() => setEditorMode((current) => current === "rows" ? "text" : "rows")}>
+            {editorMode === "rows" ? "Exclusion Text Editor" : "Exclusion Rows"}
+          </button>
+          {editorMode === "rows" ? (
+            <button className="small-button filter-add-button" type="button" onClick={addRow}>
+              <FontAwesomeIcon icon={faPlus} /> Add filter
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div className="filter-row-list">
-        {rows.map((pattern, index) => {
-          const kind = exclusionFilterKind(pattern);
-          return (
-            <div className="filter-row" key={index}>
-              <select
-                aria-label={`Filter type ${index + 1}`}
-                className="filter-kind-select"
-                value={kind}
-                onChange={(event) => updateKind(index, event.target.value as ExclusionFilterKind)}
-              >
-                <option value="extension">Excludes file extension</option>
-                <option value="expression">Excludes expression</option>
-              </select>
-              {kind === "extension" ? (
-                <div className="filter-pattern-input with-prefix">
-                  <span aria-hidden="true">*.</span>
+      {editorMode === "text" ? (
+        <textarea
+          aria-label={`${label} text editor`}
+          className="text-input min-h-48 font-mono"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          spellCheck={false}
+        />
+      ) : (
+        <div className="filter-row-list">
+          {rows.map((pattern, index) => {
+            const kind = exclusionFilterKind(pattern);
+            return (
+              <div className="filter-row" key={index}>
+                <select
+                  aria-label={`Filter type ${index + 1}`}
+                  className="filter-kind-select"
+                  value={kind}
+                  onChange={(event) => updateKind(index, event.target.value as ExclusionFilterKind)}
+                >
+                  <option value="extension">Excludes file extension</option>
+                  <option value="expression">Excludes expression</option>
+                </select>
+                {kind === "extension" ? (
+                  <div className="filter-pattern-input with-prefix">
+                    <span aria-hidden="true">*.</span>
+                    <input
+                      ref={index === 0 ? firstRowInputRef : undefined}
+                      aria-label={`Filter pattern ${index + 1}`}
+                      value={extensionValueFromPattern(pattern)}
+                      onChange={(event) => updateRow(index, extensionPatternFromValue(event.target.value))}
+                      placeholder="csv"
+                    />
+                  </div>
+                ) : (
                   <input
+                    ref={index === 0 ? firstRowInputRef : undefined}
                     aria-label={`Filter pattern ${index + 1}`}
-                    value={extensionValueFromPattern(pattern)}
-                    onChange={(event) => updateRow(index, extensionPatternFromValue(event.target.value))}
-                    placeholder="csv"
+                    className="filter-pattern-input"
+                    value={pattern}
+                    onChange={(event) => updateRow(index, event.target.value)}
+                    placeholder="**/node_modules/"
                   />
-                </div>
-              ) : (
-                <input
-                  aria-label={`Filter pattern ${index + 1}`}
-                  className="filter-pattern-input"
-                  value={pattern}
-                  onChange={(event) => updateRow(index, event.target.value)}
-                  placeholder="**/node_modules/"
-                />
-              )}
-              <button className="filter-remove-button" type="button" aria-label={`Remove filter ${index + 1}`} onClick={() => removeRow(index)}>
-                <FontAwesomeIcon icon={faXmark} />
-              </button>
-            </div>
-          );
-        })}
-      </div>
+                )}
+                <button className="filter-remove-button" type="button" aria-label={`Remove filter ${index + 1}`} onClick={() => removeRow(index)}>
+                  <FontAwesomeIcon icon={faXmark} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

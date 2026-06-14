@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, Notification, dialog, ipcMain, nativeImage, safeStorage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, Notification, dialog, ipcMain, nativeImage, safeStorage, screen, shell } = require("electron");
 const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -336,6 +336,8 @@ function registerIpc() {
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
   ipcMain.handle("config:export", exportConfig);
   ipcMain.handle("config:restore", restoreConfig);
+  ipcMain.handle("config:export-backup", (_event, profileId) => exportBackupConfig(profileId));
+  ipcMain.handle("config:load-backup", loadBackupConfig);
   ipcMain.handle("notifications:list", listNotificationLog);
   ipcMain.handle("taskbar:set-status", (_event, status) => updateTaskbarStatus(status));
   ipcMain.handle("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
@@ -353,8 +355,8 @@ function createTray() {
   tray = new Tray(createTrayStatusIcon(currentTaskbarStatus));
   tray.setToolTip(taskbarOverlayDescription(currentTaskbarStatus));
   tray.on("click", toggleMainWindow);
-  tray.on("right-click", () => {
-    tray.popUpContextMenu(createTrayMenu());
+  tray.on("right-click", (_event, bounds) => {
+    tray.popUpContextMenu(createTrayMenu(), trayMenuPosition(bounds));
   });
 }
 
@@ -364,6 +366,25 @@ function createTrayMenu() {
     { type: "separator" },
     { label: "Quit", click: quitFromTray }
   ]);
+}
+
+function trayMenuPosition(bounds) {
+  if (process.platform !== "win32") return undefined;
+  const trayBounds = bounds ?? tray?.getBounds?.();
+  if (!trayBounds) return undefined;
+
+  const trayCenter = {
+    x: Math.round(trayBounds.x + trayBounds.width / 2),
+    y: Math.round(trayBounds.y + trayBounds.height / 2)
+  };
+  const workArea = screen.getDisplayNearestPoint(trayCenter).workArea;
+  const right = workArea.x + workArea.width - 1;
+  const bottom = workArea.y + workArea.height - 1;
+
+  return {
+    x: Math.max(workArea.x + 1, Math.min(trayCenter.x, right)),
+    y: Math.max(workArea.y + 1, Math.min(trayCenter.y, bottom))
+  };
 }
 
 function showMainWindow() {
@@ -720,6 +741,7 @@ async function connectRcloneAccount(options) {
   }
 
   const configured = await configureRcloneRemote({ ...options, replaceRemote: true });
+  clearCacheByPrefix(rcloneDirectoryCache, `rclone:${configured.remoteName}:`);
   return {
     backend: configured.backend,
     backendLabel: configured.backendConfig.label,
@@ -1273,7 +1295,8 @@ function normalizeStoredProfile(profile) {
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) return profile;
   return {
     ...profile,
-    excludes: normalizeExcludePatterns(profile.excludes)
+    excludes: normalizeExcludePatterns(profile.excludes),
+    pendingBackupStartedAt: typeof profile.pendingBackupStartedAt === "string" ? profile.pendingBackupStartedAt : undefined
   };
 }
 
@@ -1476,6 +1499,25 @@ async function exportConfig() {
   return { cancelled: false, path: result.filePath };
 }
 
+async function exportBackupConfig(profileId) {
+  const profile = listProfiles().find((item) => item.id === String(profileId));
+  if (!profile) throw new Error("Choose a saved backup to download.");
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Save backup config",
+    defaultPath: `${safeConfigFilename(profile.name || "backup")}.backup.json`,
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+  if (result.canceled || !result.filePath) return { cancelled: true };
+
+  fs.writeFileSync(result.filePath, JSON.stringify({
+    version: 1,
+    type: "reststop-backup",
+    profiles: [stripProfileSecrets(profile)]
+  }, null, 2));
+  return { cancelled: false, path: result.filePath };
+}
+
 async function restoreConfig() {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: "Restore Rest Stop config",
@@ -1503,6 +1545,95 @@ async function restoreConfig() {
     settings: restored.settings,
     profiles: profilesPendingReview.map(sanitizeProfileForRenderer)
   };
+}
+
+async function loadBackupConfig() {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Load backup config",
+    properties: ["openFile"],
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { cancelled: true };
+
+  const raw = JSON.parse(fs.readFileSync(result.filePaths[0], "utf8"));
+  const profile = backupProfileFromConfig(raw);
+  const config = readConfig();
+  const loadedProfile = prepareLoadedProfile(profile, config.profiles);
+  const profiles = [...config.profiles, loadedProfile];
+  writeConfig({
+    ...config,
+    profiles
+  });
+
+  return {
+    cancelled: false,
+    path: result.filePaths[0],
+    profile: sanitizeProfileForRenderer(loadedProfile),
+    profiles: profiles.map(sanitizeProfileForRenderer)
+  };
+}
+
+function backupProfileFromConfig(config) {
+  const profiles = Array.isArray(config?.profiles) ? config.profiles : null;
+  const profile = profiles?.length === 1 ? profiles[0] : looksLikeProfile(config) ? config : null;
+  if (!profile) throw new Error("Choose a backup config file that contains one backup.");
+  const normalized = normalizeStoredProfile(profile);
+  if (!looksLikeProfile(normalized)) throw new Error("Choose a backup config file that contains one backup.");
+  return normalized;
+}
+
+function looksLikeProfile(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && value.repository && Array.isArray(value.sources));
+}
+
+function prepareLoadedProfile(profile, existingProfiles) {
+  const now = new Date().toISOString();
+  const existingIds = new Set(existingProfiles.map((item) => item.id).filter(Boolean));
+  const existingNames = new Set(existingProfiles.map((item) => backupNameKey(item.name)).filter(Boolean));
+  const name = uniqueBackupName(String(profile.name ?? "").trim() || "Loaded backup", existingNames);
+  const profileId = String(profile.id ?? "");
+  const id = profileId && !existingIds.has(profileId) ? profileId : crypto.randomUUID();
+
+  return {
+    ...profile,
+    id,
+    name,
+    encryptedPassword: undefined,
+    password: undefined,
+    passwordConfirm: undefined,
+    currentPassword: undefined,
+    passwordSet: false,
+    schedulePaused: true,
+    reviewRequired: true,
+    pendingBackupStartedAt: undefined,
+    createdAt: profile.createdAt ?? now
+  };
+}
+
+function uniqueBackupName(name, existingNames) {
+  const baseName = name || "Loaded backup";
+  if (!existingNames.has(backupNameKey(baseName))) return baseName;
+
+  let index = 2;
+  while (existingNames.has(backupNameKey(`${baseName} ${index}`))) index += 1;
+  return `${baseName} ${index}`;
+}
+
+function stripProfileSecrets(profile) {
+  const { encryptedPassword, password, passwordConfirm, currentPassword, ...rest } = profile;
+  return {
+    ...rest,
+    passwordSet: false
+  };
+}
+
+function safeConfigFilename(name) {
+  const filename = String(name ?? "")
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
+  return filename || "backup";
 }
 
 function sanitizeProfileForRenderer(profile) {
@@ -1551,6 +1682,10 @@ function writeProfiles(profiles) {
   });
 }
 
+function backupNameKey(name) {
+  return String(name ?? "").trim().toLowerCase();
+}
+
 function saveProfile(profile) {
   const profiles = listProfiles();
   const existingIndex = profiles.findIndex((item) => item.id && item.id === profile.id);
@@ -1559,6 +1694,11 @@ function saveProfile(profile) {
   const passwordConfirm = String(profile.passwordConfirm ?? "");
   const currentPassword = String(profile.currentPassword ?? "");
   const restoringProfile = Boolean(existing?.reviewRequired);
+
+  const nextNameKey = backupNameKey(profile.name);
+  if (nextNameKey && profiles.some((item) => item.id !== existing?.id && backupNameKey(item.name) === nextNameKey)) {
+    throw new Error("A backup with this name already exists. Choose a unique backup name.");
+  }
 
   if (!existing && !nextPassword) throw new Error("Enter and confirm the backup password.");
   if (nextPassword && nextPassword !== passwordConfirm) throw new Error("Backup passwords do not match.");
@@ -1592,6 +1732,7 @@ function saveProfile(profile) {
     reviewRequired: false,
     lastBackupStartedAt: existing?.lastBackupStartedAt,
     lastBackupCompletedAt: existing?.lastBackupCompletedAt,
+    pendingBackupStartedAt: existing?.pendingBackupStartedAt,
     createdAt: existing?.createdAt ?? new Date().toISOString()
   };
   if (existingIndex >= 0) profiles[existingIndex] = saved;
@@ -2020,6 +2161,7 @@ async function startBackup(profile, password) {
   }
   if (profile.passwordSet && !resolvedPassword) throw new Error("Enter the backup password before running this backup.");
 
+  markBackupPending(profileId);
   const networkLocation = await networkRepositoryLocation(profile.repository);
   if (networkLocation && !networkLocation.reachable) {
     scheduleNetworkBackupRetry(profile, resolvedPassword, networkLocation.message);
@@ -2069,6 +2211,7 @@ async function startBackup(profile, password) {
         percentComplete: null,
         progressLabel: "Backup stopped."
       });
+      clearBackupPending(profileId);
       installPendingUpdateWhenIdle();
       return getBackupStatus();
     }
@@ -2081,12 +2224,16 @@ async function startBackup(profile, password) {
     child = childProcess.spawn(restic.path, args, { env, windowsHide: true });
     runState.pid = child.pid ?? null;
     runState.child = child;
-    updateProfileBackupTimestamps(profileId, { lastBackupStartedAt: runState.startedAt });
+    updateProfileBackupTimestamps(profileId, {
+      lastBackupStartedAt: runState.startedAt,
+      pendingBackupStartedAt: runState.startedAt
+    });
   } catch (error) {
     if (shouldRetryBackupForNetwork(profile, error)) {
       scheduleNetworkBackupRetry(profile, resolvedPassword, error instanceof Error ? error.message : String(error));
       return getBackupStatus();
     }
+    if (runState.stopRequested) clearBackupPending(profileId);
     activeBackupRuns.set(profileId, {
       ...runState,
       running: false,
@@ -2119,6 +2266,7 @@ async function startBackup(profile, password) {
       scheduleNetworkBackupRetry(profile, resolvedPassword, error instanceof Error ? error.message : String(error), runState);
       return;
     }
+    if (runState.stopRequested) clearBackupPending(profileId);
     activeBackupRuns.set(profileId, {
       ...runState,
       running: false,
@@ -2135,7 +2283,12 @@ async function startBackup(profile, password) {
     if (runState.failureHandled) return;
     if (stdoutBuffer.trim()) updateBackupProgressFromLine(profileId, stdoutBuffer);
     if (!runState.stopRequested && code === 0) {
-      updateProfileBackupTimestamps(profileId, { lastBackupCompletedAt: new Date().toISOString() });
+      updateProfileBackupTimestamps(profileId, {
+        lastBackupCompletedAt: new Date().toISOString(),
+        pendingBackupStartedAt: undefined
+      });
+    } else if (runState.stopRequested) {
+      clearBackupPending(profileId);
     }
     const failureMessage = (runState.stderr.trim() || `Backup failed with exit code ${code}.`).trim();
     if (!runState.stopRequested && code !== 0 && shouldRetryBackupForNetwork(profile, failureMessage)) {
@@ -2165,6 +2318,7 @@ function scheduleNetworkBackupRetry(profile, password, reason, currentState = {}
   const profileId = String(profile?.id ?? "");
   if (!profileId) return;
   clearBackupRetry(profileId);
+  markBackupPending(profileId, currentState.startedAt);
 
   const retryAt = new Date(Date.now() + NETWORK_RETRY_MS);
   const retryTimer = setTimeout(() => retryNetworkBackup(profileId), NETWORK_RETRY_MS);
@@ -2282,6 +2436,21 @@ function isNetworkError(error) {
   return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|temporary failure|transport|tls handshake|broken pipe/i.test(errorOutput(error));
 }
 
+function markBackupPending(profileId, startedAt = new Date().toISOString()) {
+  const profiles = listProfiles();
+  const index = profiles.findIndex((profile) => profile.id === String(profileId));
+  if (index < 0 || profiles[index].pendingBackupStartedAt) return;
+  profiles[index] = {
+    ...profiles[index],
+    pendingBackupStartedAt: startedAt
+  };
+  writeProfiles(profiles);
+}
+
+function clearBackupPending(profileId) {
+  updateProfileBackupTimestamps(profileId, { pendingBackupStartedAt: undefined });
+}
+
 function updateProfileBackupTimestamps(profileId, timestamps) {
   const profiles = listProfiles();
   const index = profiles.findIndex((profile) => profile.id === String(profileId));
@@ -2300,6 +2469,7 @@ async function stopBackup(profileId) {
   const runState = activeBackupRuns.get(id);
   if (runState?.waitingForNetwork) {
     clearBackupRetry(id);
+    clearBackupPending(id);
     activeBackupRuns.set(id, {
       ...runState,
       running: false,
@@ -2315,6 +2485,7 @@ async function stopBackup(profileId) {
   if (runState?.running) {
     runState.stopRequested = true;
     runState.progressLabel = "Stopping backup...";
+    clearBackupPending(id);
     activeBackupRuns.set(id, runState);
     await terminateBackupRun(runState);
     return getBackupStatus();
@@ -2327,6 +2498,7 @@ async function stopBackup(profileId) {
       .find((item) => commandMatchesRepository(item.commandLine, target));
     if (processInfo?.pid) {
       await terminateProcessTree(processInfo.pid);
+      clearBackupPending(id);
       activeBackupRuns.set(id, {
         running: false,
         percentComplete: null,

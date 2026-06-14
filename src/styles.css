@@ -869,6 +869,13 @@ button:disabled {
   gap: 0.75rem;
 }
 
+.filter-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .filter-add-button {
   flex: 0 0 auto;
 }
@@ -2176,6 +2183,14 @@ button:disabled {
   .filter-editor-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .filter-editor-actions {
+    justify-content: stretch;
+  }
+
+  .filter-editor-actions .small-button {
+    justify-content: center;
   }
 
   .filter-row {
