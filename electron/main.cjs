@@ -798,7 +798,12 @@ async function configureRcloneRemote(options) {
     if (oauthClientValues.some(Boolean) && !oauthClientValues.every(Boolean)) {
       throw new Error("Enter both the Google Drive client ID and client secret, or leave both blank.");
     }
-    const auth = await runProcess(rclone.path, ["authorize", backend, ...oauthClientValues.filter(Boolean)], rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 }));
+    let auth;
+    try {
+      auth = await runProcess(rclone.path, ["authorize", backend, ...oauthClientValues.filter(Boolean)], rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 }));
+    } catch (error) {
+      throw friendlyRcloneAuthorizeError(error, backendConfig.label);
+    }
     const token = extractJsonObject(`${auth.stdout}\n${auth.stderr}`);
     configArgs.push("token", token);
   }
@@ -942,6 +947,21 @@ function friendlyRcloneRemoteError(error, remoteName) {
     return new Error(`The Rclone account "${remoteName}" is not connected on this computer. Reconnect the backend account, then try browsing again.`);
   }
   return error;
+}
+
+function friendlyRcloneAuthorizeError(error, backendLabel) {
+  const output = sanitizeRcloneOutput(errorOutput(error));
+  if (/context canceled|authorization canceled|access_denied|denied access|cancelled/i.test(output)) {
+    return new Error(`${backendLabel} authorization was canceled before Rest Stop received permission. Try connecting again and finish the sign-in prompt in your browser.`);
+  }
+  return new Error(output || `${backendLabel} authorization did not complete. Try connecting again.`);
+}
+
+function sanitizeRcloneOutput(output) {
+  return String(output ?? "")
+    .replace(/https?:\/\/\S+/gi, "[authorization link hidden]")
+    .replace(/\b(code|state|session_crd|access_token|refresh_token|id_token)=\S+/gi, "$1=[hidden]")
+    .trim();
 }
 
 function isMissingRcloneRemoteError(error) {
