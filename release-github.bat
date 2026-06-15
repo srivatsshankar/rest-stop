@@ -99,17 +99,6 @@ if defined REMOTE_TAG_EXISTS (
 )
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-gh release view "%TAG%" --repo "%REPO%" >nul 2>nul
-if errorlevel 1 (
-  echo Creating GitHub release %TAG% from %NOTES_FILE%...
-  gh release create "%TAG%" --repo "%REPO%" --title "Rest Stop %VERSION%" --notes-file "%NOTES_FILE%" --verify-tag
-  if errorlevel 1 exit /b !ERRORLEVEL!
-) else (
-  echo Release %TAG% already exists on GitHub.
-)
-
-for /f "usebackq delims=" %%U in (`gh release view "%TAG%" --repo "%REPO%" --json url --jq ".url"`) do set "RELEASE_URL=%%U"
-
-echo Release %TAG% has been created: %RELEASE_URL%
-echo GitHub Actions will build and upload the Windows .exe and .msi release files.
+echo Release tag %TAG% has been pushed.
+echo GitHub Actions will build the Windows .exe and .msi files, create the release as a draft, attach the files, then publish it.
 exit /b 0

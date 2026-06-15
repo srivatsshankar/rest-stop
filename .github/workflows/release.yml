@@ -28,30 +28,12 @@ jobs:
       - name: Build Windows release files
         run: npm run dist
 
-      - name: Ensure GitHub release
-        shell: pwsh
-        run: |
-          $tag = $env:GITHUB_REF_NAME
-          $notesFile = "md/releases/$tag.md"
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $tag already exists; keeping the existing release notes."
-            exit 0
-          }
-
-          if (Test-Path $notesFile) {
-            gh release create $tag --repo $env:GITHUB_REPOSITORY --title "Rest Stop $($tag.TrimStart('v'))" --notes-file $notesFile --verify-tag
-          } else {
-            gh release create $tag --repo $env:GITHUB_REPOSITORY --title "Rest Stop $($tag.TrimStart('v'))" --generate-notes --verify-tag
-          }
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload release files
+      - name: Create GitHub release with files
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME
           $version = $tag.TrimStart("v")
+          $notesFile = "md/releases/$tag.md"
           $files = @(
             "release/Rest-Stop-$version-windows.exe",
             "release/Rest-Stop-$version-windows.msi"
@@ -62,6 +44,19 @@ jobs:
               exit 1
             }
           }
-          gh release upload $tag @files --repo $env:GITHUB_REPOSITORY --clobber
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Replacing existing release $tag."
+            gh release delete $tag --repo $env:GITHUB_REPOSITORY --yes
+          }
+
+          if (Test-Path $notesFile) {
+            gh release create $tag @files --repo $env:GITHUB_REPOSITORY --title "Rest Stop $version" --notes-file $notesFile --verify-tag --draft
+          } else {
+            gh release create $tag @files --repo $env:GITHUB_REPOSITORY --title "Rest Stop $version" --generate-notes --verify-tag --draft
+          }
+
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
