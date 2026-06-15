@@ -36,6 +36,14 @@ let isQuitting = false;
 let updateReadyToInstall = false;
 let updateInstallTimer = null;
 let updaterConfigured = false;
+let updateStatus = {
+  status: app.isPackaged ? "idle" : "unavailable",
+  version: null,
+  percent: null,
+  pendingInstall: false,
+  message: app.isPackaged ? "No update is pending." : "Update status is available in the installed app.",
+  checkedAt: new Date().toISOString()
+};
 let activeRestoreRunCount = 0;
 const BACKGROUND_LAUNCH_ARG = "--reststop-background";
 const activeBackupRuns = new Map();
@@ -255,18 +263,79 @@ function configureAutoLaunch() {
 }
 
 function configureAutoUpdater() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) {
+    setUpdateStatus({
+      status: "unavailable",
+      version: null,
+      percent: null,
+      pendingInstall: false,
+      message: "Update status is available in the installed app."
+    });
+    return;
+  }
   if (!updaterConfigured) {
     autoUpdater.logger = log;
     log.transports.file.level = "info";
     autoUpdater.autoInstallOnAppQuit = false;
 
-    autoUpdater.on("update-downloaded", () => {
+    autoUpdater.on("checking-for-update", () => {
+      setUpdateStatus({
+        status: "checking",
+        percent: null,
+        pendingInstall: false,
+        message: "Checking for updates..."
+      });
+    });
+    autoUpdater.on("update-available", (info) => {
+      setUpdateStatus({
+        status: "available",
+        version: updateInfoVersion(info),
+        percent: 0,
+        pendingInstall: false,
+        message: updateInfoVersion(info)
+          ? `Upgrade to version ${updateInfoVersion(info)} is available.`
+          : "An update is available."
+      });
+    });
+    autoUpdater.on("download-progress", (progress) => {
+      const percent = clampPercent(progress?.percent);
+      setUpdateStatus({
+        status: "downloading",
+        percent,
+        pendingInstall: false,
+        message: percent === null ? "Downloading update..." : `Downloading update: ${Math.round(percent)}%.`
+      });
+    });
+    autoUpdater.on("update-downloaded", (info) => {
       updateReadyToInstall = true;
+      setUpdateStatus({
+        status: "downloaded",
+        version: updateInfoVersion(info) ?? updateStatus.version,
+        percent: 100,
+        pendingInstall: true,
+        message: backupOrRestoreIsActive()
+          ? "Update downloaded. Installation is pending until backups and restores finish."
+          : "Update downloaded. Installation is pending."
+      });
       installPendingUpdateWhenIdle();
+    });
+    autoUpdater.on("update-not-available", () => {
+      setUpdateStatus({
+        status: "idle",
+        version: null,
+        percent: null,
+        pendingInstall: false,
+        message: "No update is pending."
+      });
     });
     autoUpdater.on("error", (error) => {
       log.error("Auto-update failed", error);
+      setUpdateStatus({
+        status: "error",
+        percent: null,
+        pendingInstall: updateReadyToInstall,
+        message: error instanceof Error ? error.message : "Unable to check for updates."
+      });
     });
     updaterConfigured = true;
   }
@@ -299,13 +368,61 @@ function stopAutoUpdateChecks() {
   }
   autoUpdater.autoDownload = false;
   updateReadyToInstall = false;
+  setUpdateStatus({
+    status: "disabled",
+    version: null,
+    percent: null,
+    pendingInstall: false,
+    message: "Automatic updates are turned off."
+  });
 }
 
 function installPendingUpdateWhenIdle() {
-  if (!getAutoUpdatesEnabled() || !updateReadyToInstall || backupOrRestoreIsActive()) return;
+  if (!getAutoUpdatesEnabled() || !updateReadyToInstall) return;
+  if (backupOrRestoreIsActive()) {
+    setUpdateStatus({
+      status: "downloaded",
+      percent: 100,
+      pendingInstall: true,
+      message: "Update downloaded. Installation is pending until backups and restores finish."
+    });
+    return;
+  }
+  setUpdateStatus({
+    status: "installing",
+    percent: 100,
+    pendingInstall: true,
+    message: "Installing update..."
+  });
   updateReadyToInstall = false;
   isQuitting = true;
   autoUpdater.quitAndInstall(false, true);
+}
+
+function getUpdateStatus() {
+  return {
+    ...updateStatus,
+    enabled: getAutoUpdatesEnabled(),
+    pendingInstall: Boolean(updateStatus.pendingInstall || updateReadyToInstall)
+  };
+}
+
+function setUpdateStatus(nextStatus) {
+  updateStatus = {
+    ...updateStatus,
+    ...nextStatus,
+    checkedAt: new Date().toISOString()
+  };
+}
+
+function updateInfoVersion(info) {
+  const version = String(info?.version ?? "").trim();
+  return version || null;
+}
+
+function clampPercent(value) {
+  const percent = Number(value);
+  return Number.isFinite(percent) ? Math.max(0, Math.min(percent, 100)) : null;
 }
 
 function backupOrRestoreIsActive() {
@@ -352,6 +469,7 @@ function registerIpc() {
   ipcMain.handle("settings:save-backup-defaults", (_event, settings) => saveBackupDefaults(settings));
   ipcMain.handle("updates:get-auto-enabled", () => getAutoUpdatesEnabled());
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
+  ipcMain.handle("updates:get-status", getUpdateStatus);
   ipcMain.handle("config:export", exportConfig);
   ipcMain.handle("config:restore", restoreConfig);
   ipcMain.handle("config:export-backup", (_event, profileId) => exportBackupConfig(profileId));

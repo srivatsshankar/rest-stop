@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("reststop", {
   saveBackupDefaults: (settings) => ipcRenderer.invoke("settings:save-backup-defaults", settings),
   getAutoUpdatesEnabled: () => ipcRenderer.invoke("updates:get-auto-enabled"),
   setAutoUpdatesEnabled: (enabled) => ipcRenderer.invoke("updates:set-auto-enabled", enabled),
+  getUpdateStatus: () => ipcRenderer.invoke("updates:get-status"),
   exportConfig: () => ipcRenderer.invoke("config:export"),
   restoreConfig: () => ipcRenderer.invoke("config:restore"),
   exportBackupConfig: (profileId) => ipcRenderer.invoke("config:export-backup", profileId),

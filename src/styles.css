@@ -85,6 +85,10 @@ button:disabled {
   margin-top: 1.25rem;
 }
 
+.about-section {
+  margin-top: 2.5rem;
+}
+
 .settings-label {
   font-size: 0.75rem;
   font-weight: 700;

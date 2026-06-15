@@ -37,9 +37,11 @@ import {
   faXmark
 } from "@fortawesome/free-solid-svg-icons";
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
+import packageJson from "../package.json";
 import "./styles.css";
 
 const APP_ICON_SRC = "app-icon/icon.png";
+const APP_VERSION = packageJson.version;
 
 type RepositoryType = "local" | "sftp" | "rest" | "rclone";
 type RcloneBackend = "drive" | "onedrive" | "dropbox" | "box" | "pcloud" | "yandex" | "mega" | "b2" | "s3" | "smb";
@@ -214,6 +216,16 @@ type BackupVersionCount = {
   message?: string;
 };
 
+type UpdateStatus = {
+  enabled: boolean;
+  status: "disabled" | "idle" | "checking" | "available" | "downloading" | "downloaded" | "installing" | "error" | "unavailable";
+  version?: string | null;
+  percent?: number | null;
+  pendingInstall: boolean;
+  message: string;
+  checkedAt: string;
+};
+
 type AppSettings = {
   autoUpdatesEnabled?: boolean;
   defaultExcludes: string[];
@@ -249,6 +261,7 @@ type ReststopBridge = {
   saveBackupDefaults: (settings: Pick<AppSettings, "defaultExcludes">) => Promise<AppSettings>;
   getAutoUpdatesEnabled: () => Promise<boolean>;
   setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
+  getUpdateStatus: () => Promise<UpdateStatus>;
   exportConfig: () => Promise<{ cancelled: boolean; path?: string }>;
   restoreConfig: () => Promise<{ cancelled: boolean; path?: string; profiles?: BackupProfile[]; settings?: AppSettings }>;
   exportBackupConfig: (profileId: string) => Promise<{ cancelled: boolean; path?: string }>;
@@ -349,6 +362,15 @@ const fallbackBridge: ReststopBridge = {
   saveBackupDefaults: async (settings) => ({ defaultExcludes: normalizeExcludePatterns(settings.defaultExcludes) }),
   getAutoUpdatesEnabled: async () => true,
   setAutoUpdatesEnabled: async (enabled) => enabled,
+  getUpdateStatus: async () => ({
+    enabled: true,
+    status: "unavailable",
+    version: null,
+    percent: null,
+    pendingInstall: false,
+    message: "Update status is available in the installed app.",
+    checkedAt: new Date().toISOString()
+  }),
   exportConfig: async () => ({ cancelled: true }),
   restoreConfig: async () => ({ cancelled: true }),
   exportBackupConfig: async () => ({ cancelled: true }),
@@ -633,6 +655,15 @@ function App() {
   const [versionCounts, setVersionCounts] = useState<Record<string, BackupVersionCount>>({});
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
   const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
+    enabled: true,
+    status: "checking",
+    version: null,
+    percent: null,
+    pendingInstall: false,
+    message: "Checking for updates...",
+    checkedAt: new Date().toISOString()
+  });
   const [defaultExcludes, setDefaultExcludes] = useState(defaultExcludeText);
   const [configMessage, setConfigMessage] = useState("");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -651,6 +682,7 @@ function App() {
     runResticCheck();
     runRcloneCheck();
     refreshBackupStatus();
+    refreshUpdateStatus();
     bridge.getSettings()
       .then((settings) => {
         setAutoUpdatesEnabledState(settings.autoUpdatesEnabled !== false);
@@ -679,7 +711,10 @@ function App() {
   }, [passwordPrompt]);
 
   useEffect(() => {
-    const interval = window.setInterval(refreshBackupStatus, 5000);
+    const interval = window.setInterval(() => {
+      refreshBackupStatus();
+      refreshUpdateStatus();
+    }, 5000);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -792,6 +827,7 @@ function App() {
     setAutoUpdatesEnabledState(enabled);
     try {
       setAutoUpdatesEnabledState(await bridge.setAutoUpdatesEnabled(enabled));
+      await refreshUpdateStatus();
     } catch {
       setAutoUpdatesEnabledState((current) => !current);
     }
@@ -885,6 +921,22 @@ function App() {
         percentComplete: null,
         progressLabel: "Backup status is unavailable.",
         errorDetails: null,
+        checkedAt: new Date().toISOString()
+      }));
+    }
+  }
+
+  async function refreshUpdateStatus() {
+    try {
+      const status = await bridge.getUpdateStatus();
+      setUpdateStatus(status);
+      setAutoUpdatesEnabledState(status.enabled);
+    } catch {
+      setUpdateStatus((current) => ({
+        ...current,
+        status: "error",
+        percent: null,
+        message: "Update status is unavailable.",
         checkedAt: new Date().toISOString()
       }));
     }
@@ -1241,6 +1293,7 @@ function App() {
                 rcloneChecking={rcloneChecking}
                 themeMode={themeMode}
                 autoUpdatesEnabled={autoUpdatesEnabled}
+                updateStatus={updateStatus}
                 defaultExcludes={defaultExcludes}
                 configMessage={configMessage}
                 onCheckRestic={runResticCheck}
@@ -1441,6 +1494,60 @@ function formatNotificationTime(value: string) {
   });
 }
 
+function UpdateStatusBox({ status }: { status: UpdateStatus }) {
+  const updateIsAvailable = status.status === "available" || status.status === "downloading" || status.status === "downloaded" || status.status === "installing";
+  const percent = typeof status.percent === "number" ? Math.max(0, Math.min(status.percent, 100)) : null;
+  const title = updateIsAvailable
+    ? status.version
+      ? `Upgrade to version ${status.version} is available`
+      : "An update is available"
+    : status.status === "checking"
+      ? "Checking for updates"
+    : status.status === "disabled"
+      ? "Automatic updates are off"
+    : status.status === "error"
+      ? "Update status unavailable"
+    : status.status === "unavailable"
+      ? "Update status unavailable"
+      : "Rest Stop is up to date";
+  const badge = status.pendingInstall
+    ? "Pending installation"
+    : status.status === "downloading" && percent !== null
+      ? `${Math.round(percent)}%`
+    : status.status === "available"
+      ? "Available"
+    : status.status === "checking"
+      ? "Checking"
+    : status.status === "error"
+      ? "Attention"
+    : status.status === "disabled"
+      ? "Off"
+      : "Current";
+
+  return (
+    <div className="update-status-box rounded-md border border-ink/10 bg-paper px-4 py-3">
+      <div className="backup-progress-heading">
+        <span>{title}</span>
+        <span className={`backup-progress-value ${updateIsAvailable || status.status === "checking" ? "running" : "idle"}`}>{badge}</span>
+      </div>
+      {updateIsAvailable ? (
+        <div className="progress-track" aria-label="Update download progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} role="progressbar">
+          <div className={`progress-fill ${status.status === "downloading" && percent === null ? "indeterminate" : ""}`} style={{ width: `${percent ?? 0}%` }} />
+        </div>
+      ) : null}
+      {status.pendingInstall ? (
+        <div className="backup-progress-metadata">
+          <span>
+            <strong>Install status</strong>
+            Pending installation
+          </span>
+        </div>
+      ) : null}
+      <p className="backup-progress-label">{status.message}</p>
+    </div>
+  );
+}
+
 function SettingsView({
   restic,
   resticChecking,
@@ -1448,6 +1555,7 @@ function SettingsView({
   rcloneChecking,
   themeMode,
   autoUpdatesEnabled,
+  updateStatus,
   defaultExcludes,
   configMessage,
   onCheckRestic,
@@ -1464,6 +1572,7 @@ function SettingsView({
   rcloneChecking: boolean;
   themeMode: ThemeMode;
   autoUpdatesEnabled: boolean;
+  updateStatus: UpdateStatus;
   defaultExcludes: string;
   configMessage: string;
   onCheckRestic: () => void;
@@ -1517,6 +1626,7 @@ function SettingsView({
           />
           <span aria-hidden="true" className="settings-toggle-control" />
         </label>
+        <UpdateStatusBox status={updateStatus} />
       </section>
 
       <section className="settings-section appearance-section">
@@ -1558,6 +1668,11 @@ function SettingsView({
       <section className="settings-section backup-defaults-section">
         <p className="settings-label">Backup defaults</p>
         <ExclusionFilterEditor label="Default exclusions" value={defaultExcludes} onChange={onDefaultExcludesChange} />
+      </section>
+
+      <section className="settings-section about-section">
+        <p className="settings-label">About</p>
+        <p className="text-sm font-semibold text-ink/75">Version {APP_VERSION}</p>
       </section>
     </section>
   );
