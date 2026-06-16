@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or replace, such as v1.0.3"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -31,12 +37,14 @@ jobs:
       - name: Create GitHub release with files
         shell: pwsh
         run: |
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:RELEASE_TAG
           $version = $tag.TrimStart("v")
           $notesFile = "md/releases/$tag.md"
           $files = @(
             "release/Rest-Stop-$version-windows.exe",
-            "release/Rest-Stop-$version-windows.msi"
+            "release/Rest-Stop-$version-windows.exe.blockmap",
+            "release/Rest-Stop-$version-windows.msi",
+            "release/latest.yml"
           )
           foreach ($file in $files) {
             if (!(Test-Path $file)) {
@@ -60,3 +68,4 @@ jobs:
           gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}

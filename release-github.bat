@@ -100,5 +100,5 @@ if defined REMOTE_TAG_EXISTS (
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 echo Release tag %TAG% has been pushed.
-echo GitHub Actions will build the Windows .exe and .msi files, create the release as a draft, attach the files, then publish it.
+echo GitHub Actions will build the Windows .exe, .exe.blockmap, .msi, and latest.yml files, create the release as a draft, attach the files, then publish it.
 exit /b 0
