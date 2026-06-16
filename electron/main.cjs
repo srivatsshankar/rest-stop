@@ -60,6 +60,7 @@ const DRIVE_RCLONE_RESTIC_ARGS = [
   "--stdio",
   "--fast-list",
   "--b2-hard-delete",
+  "--drive-use-trash=false",
   "--checkers 4",
   "--tpslimit 8",
   "--tpslimit-burst 8",
@@ -122,7 +123,12 @@ const rcloneBackends = {
   drive: {
     label: "Google Drive",
     auth: "oauth",
-    config: ["scope", "drive"]
+    config: ["scope", "drive"],
+    oauthClientFields: ["client_id", "client_secret"],
+    fields: [
+      { key: "client_id", configKey: "client_id", label: "Google Drive client ID", required: false },
+      { key: "client_secret", configKey: "client_secret", label: "Google Drive client secret", required: false, password: true }
+    ]
   },
   onedrive: { label: "OneDrive", auth: "oauth", config: ["drive_type", "personal"] },
   dropbox: { label: "Dropbox", auth: "oauth", config: [] },
@@ -1101,7 +1107,7 @@ function friendlyRcloneAuthorizeError(error, backendLabel) {
 function sanitizeRcloneOutput(output) {
   return String(output ?? "")
     .replace(/https?:\/\/\S+/gi, "[authorization link hidden]")
-    .replace(/\b(code|state|session_crd|access_token|refresh_token|id_token)=\S+/gi, "$1=[hidden]")
+    .replace(/\S*(code|state|session_crd|access_token|refresh_token|id_token|client_secret)=\S*/gi, "$1=[hidden]")
     .trim();
 }
 
@@ -1583,8 +1589,36 @@ function notifyBackupFailure(profile, error) {
   showFailureNotificationOnce(
     `backup:${profileId}`,
     `Backup failed: ${name}`,
-    errorOutput(error).trim() || "The backup could not finish."
+    formatBackupFailureMessage(profile, error) || "The backup could not finish."
   );
+}
+
+function formatBackupFailureMessage(profile, error) {
+  const output = errorOutput(error).trim();
+  if (profile?.repository?.type === "rclone") return friendlyRcloneBackupError(profile, output);
+  return output || "The backup failed, but restic did not return details.";
+}
+
+function friendlyRcloneBackupError(profile, output) {
+  const backendLabel = rcloneBackendLabel(profile?.repository?.rcloneBackend);
+  if (isRcloneAuthorizationFailure(output)) {
+    return `${backendLabel} authorization did not complete. Reconnect ${backendLabel} in this backup, then run the backup again.`;
+  }
+  if (isMissingRcloneRemoteError(output)) {
+    return `The ${backendLabel} account is not connected on this computer. Reconnect ${backendLabel} in this backup, then run the backup again.`;
+  }
+  return sanitizeRcloneOutput(output) || "The backup failed, but rclone did not return details.";
+}
+
+function rcloneBackendLabel(backend) {
+  return rcloneBackends[String(backend ?? "")]?.label ?? "Rclone";
+}
+
+function isRcloneAuthorizationFailure(output) {
+  const text = String(output ?? "");
+  if (/access_denied|denied access|invalid_grant|invalid_client|unauthorized_client|refresh token|failed to configure token/i.test(text)) return true;
+  const hasAuthContext = /authorization|authorize|oauth|accounts\.google\.com|localhost:\d+\/auth|session_crd=/i.test(text);
+  return hasAuthContext && /context canceled|cancelled|canceled|failed to authorize/i.test(text);
 }
 
 function notifyRestoreFailure(options, error) {
@@ -2418,19 +2452,20 @@ async function startBackup(profile, password) {
       scheduleNetworkBackupRetry(profile, resolvedPassword, error instanceof Error ? error.message : String(error));
       return getBackupStatus();
     }
+    const failureMessage = formatBackupFailureMessage(profile, error);
     if (runState.stopRequested) clearBackupPending(profileId);
     activeBackupRuns.set(profileId, {
       ...runState,
       running: false,
       percentComplete: null,
       child: null,
-      progressLabel: runState.stopRequested ? "Backup stopped." : error instanceof Error ? error.message : String(error),
-      errorDetails: runState.stopRequested ? null : backupErrorDetails(error)
+      progressLabel: runState.stopRequested ? "Backup stopped." : failureMessage,
+      errorDetails: runState.stopRequested ? null : backupErrorDetails(error, profile)
     });
     if (!runState.stopRequested) notifyBackupFailure(profile, error);
     installPendingUpdateWhenIdle();
     if (runState.stopRequested) return getBackupStatus();
-    throw error;
+    throw new Error(failureMessage);
   }
 
   let stdoutBuffer = "";
@@ -2451,14 +2486,15 @@ async function startBackup(profile, password) {
       scheduleNetworkBackupRetry(profile, resolvedPassword, error instanceof Error ? error.message : String(error), runState);
       return;
     }
+    const failureMessage = formatBackupFailureMessage(profile, error);
     if (runState.stopRequested) clearBackupPending(profileId);
     activeBackupRuns.set(profileId, {
       ...runState,
       running: false,
       percentComplete: null,
       child: null,
-      progressLabel: runState.stopRequested ? "Backup stopped." : error instanceof Error ? error.message : String(error),
-      errorDetails: runState.stopRequested ? null : backupErrorDetails(error)
+      progressLabel: runState.stopRequested ? "Backup stopped." : failureMessage,
+      errorDetails: runState.stopRequested ? null : backupErrorDetails(error, profile)
     });
     if (!runState.stopRequested) notifyBackupFailure(profile, error);
     installPendingUpdateWhenIdle();
@@ -2475,11 +2511,12 @@ async function startBackup(profile, password) {
     } else if (runState.stopRequested) {
       clearBackupPending(profileId);
     }
-    const failureMessage = (runState.stderr.trim() || `Backup failed with exit code ${code}.`).trim();
-    if (!runState.stopRequested && code !== 0 && shouldRetryBackupForNetwork(profile, failureMessage)) {
-      scheduleNetworkBackupRetry(profile, resolvedPassword, failureMessage, runState);
+    const rawFailureMessage = (runState.stderr.trim() || `Backup failed with exit code ${code}.`).trim();
+    if (!runState.stopRequested && code !== 0 && shouldRetryBackupForNetwork(profile, rawFailureMessage)) {
+      scheduleNetworkBackupRetry(profile, resolvedPassword, rawFailureMessage, runState);
       return;
     }
+    const failureMessage = code === 0 ? "" : formatBackupFailureMessage(profile, rawFailureMessage);
     activeBackupRuns.set(profileId, {
       ...runState,
       running: false,
@@ -2490,9 +2527,9 @@ async function startBackup(profile, password) {
         : code === 0
         ? "Backup completed."
         : failureMessage,
-      errorDetails: runState.stopRequested || code === 0 ? null : backupErrorDetails(failureMessage)
+      errorDetails: runState.stopRequested || code === 0 ? null : backupErrorDetails(rawFailureMessage, profile)
     });
-    if (!runState.stopRequested && code !== 0) notifyBackupFailure(profile, failureMessage);
+    if (!runState.stopRequested && code !== 0) notifyBackupFailure(profile, rawFailureMessage);
     installPendingUpdateWhenIdle();
   });
 
@@ -2552,11 +2589,12 @@ async function retryNetworkBackup(profileId) {
       scheduleNetworkBackupRetry(profile, state.retryPassword ?? "", error instanceof Error ? error.message : String(error));
       return;
     }
+    const failureMessage = formatBackupFailureMessage(profile, error);
     activeBackupRuns.set(profileId, {
       running: false,
       percentComplete: null,
-      progressLabel: error instanceof Error ? error.message : String(error),
-      errorDetails: backupErrorDetails(error),
+      progressLabel: failureMessage,
+      errorDetails: backupErrorDetails(error, profile),
       startedAt: new Date().toISOString(),
       pid: null,
       child: null,
@@ -2918,8 +2956,8 @@ async function getBackupStatus() {
   };
 }
 
-function backupErrorDetails(error) {
-  const message = errorOutput(error).trim() || "The backup failed, but restic did not return details.";
+function backupErrorDetails(error, profile) {
+  const message = formatBackupFailureMessage(profile, error);
   return {
     title: "Backup failed",
     message,

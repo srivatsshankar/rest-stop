@@ -406,7 +406,10 @@ const locationOptions: { value: LocationOption; label: string }[] = [
 ];
 
 const rcloneConfigFields: Record<RcloneBackend, { key: string; label: string; type?: "password"; placeholder?: string; required?: boolean }[]> = {
-  drive: [],
+  drive: [
+    { key: "client_id", label: "Client ID (optional)" },
+    { key: "client_secret", label: "Client secret (optional)", type: "password" }
+  ],
   onedrive: [],
   dropbox: [],
   box: [],
