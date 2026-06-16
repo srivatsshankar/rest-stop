@@ -54,6 +54,23 @@ const NETWORK_RETRY_MS = 2 * 60 * 1000;
 const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
 const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
 const NOTIFICATION_LOG_FILE = "notifications.json";
+const DEFAULT_RCLONE_RESTIC_ARGS = "serve restic --stdio --fast-list --b2-hard-delete";
+const DRIVE_RCLONE_RESTIC_ARGS = [
+  "serve restic",
+  "--stdio",
+  "--fast-list",
+  "--b2-hard-delete",
+  "--checkers 4",
+  "--tpslimit 8",
+  "--tpslimit-burst 8",
+  "--drive-pacer-min-sleep 200ms",
+  "--drive-pacer-burst 20",
+  "--low-level-retries 20",
+  "--retries 8",
+  "--retries-sleep 10s",
+  "--timeout 10m",
+  "--drive-stop-on-upload-limit"
+].join(" ");
 const rcloneDirectoryCache = new Map();
 const restoreSnapshotCache = new Map();
 const restoreFileTreeCache = new Map();
@@ -838,10 +855,16 @@ async function setupRcloneRepository(options) {
     throw new Error("Restic is not installed yet. Check Restic in Settings, then try connecting this backend again.");
   }
 
-  const target = `rclone:${remoteName}:${repositoryPath}`;
+  const repository = {
+    type: "rclone",
+    target: `rclone:${remoteName}:${repositoryPath}`,
+    rcloneBackend: backend,
+    rcloneRemoteName: remoteName,
+    rclonePath: repositoryPath
+  };
   await ensureResticRepository(
     restic.path,
-    target,
+    repository,
     envWithRcloneConfigPassword(envWithToolDirectory({ ...process.env, RESTIC_PASSWORD: password }, rclone.path))
   );
 
@@ -850,7 +873,7 @@ async function setupRcloneRepository(options) {
     backendLabel: backendConfig.label,
     remoteName,
     repositoryPath,
-    target,
+    target: repository.target,
     message: options?.replaceRemote
       ? "Rclone account updated and the backup repository is ready."
       : "Rclone connected and the backup repository is ready."
@@ -1993,9 +2016,15 @@ function resticRepositoryArgs(repositoryOrTarget) {
   const repositoryTarget = String(target ?? "").trim();
   const args = [];
   if (repositoryTarget.startsWith("rclone:")) {
-    args.push("-o", "rclone.args=serve restic --stdio --fast-list --b2-hard-delete");
+    args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget)}`);
   }
   return [...args, "-r", repositoryTarget];
+}
+
+function rcloneResticArgs(repositoryOrTarget) {
+  return typeof repositoryOrTarget === "object" && repositoryOrTarget?.rcloneBackend === "drive"
+    ? DRIVE_RCLONE_RESTIC_ARGS
+    : DEFAULT_RCLONE_RESTIC_ARGS;
 }
 
 function deleteLocalRepository(target) {
@@ -2357,7 +2386,7 @@ async function startBackup(profile, password) {
       if (rclone?.path) env = envWithRcloneConfigPassword(envWithToolDirectory(env, rclone.path));
     }
 
-    await ensureResticRepository(restic.path, profile.repository.target, env, trackResticChild);
+    await ensureResticRepository(restic.path, profile.repository, env, trackResticChild);
     if (runState.stopRequested) {
       activeBackupRuns.set(profileId, {
         ...runState,
