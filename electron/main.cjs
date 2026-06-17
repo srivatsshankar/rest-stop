@@ -53,6 +53,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const NETWORK_RETRY_MS = 2 * 60 * 1000;
 const MAX_NETWORK_RETRY_MS = 60 * 60 * 1000;
 const RESTIC_REPOSITORY_TIMEOUT_MS = 10 * 60 * 1000;
+const BACKUP_STALL_TIMEOUT_MS = 10 * 60 * 1000;
 const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
 const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
 const NOTIFICATION_LOG_FILE = "notifications.json";
@@ -93,6 +94,7 @@ const RCLONE_BACKEND_EXTRAS = {
 const rcloneDirectoryCache = new Map();
 const restoreSnapshotCache = new Map();
 const restoreFileTreeCache = new Map();
+const knownRepositories = new Set();
 
 const DEFAULT_EXCLUDES = [
   "**/venv/",
@@ -2078,7 +2080,16 @@ function resticRepositoryArgs(repositoryOrTarget) {
 function rcloneResticArgs(repositoryOrTarget) {
   const backend = typeof repositoryOrTarget === "object" ? repositoryOrTarget?.rcloneBackend : null;
   const extras = (backend && RCLONE_BACKEND_EXTRAS[backend]) || [];
-  return [...BASE_RCLONE_RESTIC_ARGS, ...extras].join(" ");
+  const combined = [...BASE_RCLONE_RESTIC_ARGS, ...extras];
+  const seen = new Map();
+  for (let i = 0; i < combined.length; i++) {
+    const flag = combined[i].match(/^--[^\s=]+/)?.[0];
+    if (flag) seen.set(flag, i);
+  }
+  return combined.filter((entry, i) => {
+    const flag = entry.match(/^--[^\s=]+/)?.[0];
+    return !flag || seen.get(flag) === i;
+  }).join(" ");
 }
 
 function deleteLocalRepository(target) {
@@ -2459,7 +2470,9 @@ async function startBackup(profile, password) {
     runState.pid = null;
     runState.child = null;
     const excludeArgs = normalizeExcludePatterns(profile.excludes).flatMap((pattern) => ["--exclude", pattern]);
-    const args = ["--json", ...resticRepositoryArgs(profile.repository), "backup", ...excludeArgs, ...profile.sources];
+    const resticBackupFlags = ["--retry-lock", "5m"];
+    if (profile.repository.type === "rclone") resticBackupFlags.push("--pack-size", "32");
+    const args = ["--json", ...resticRepositoryArgs(profile.repository), "backup", ...resticBackupFlags, ...excludeArgs, ...profile.sources];
     child = childProcess.spawn(restic.path, args, { env, windowsHide: true });
     runState.pid = child.pid ?? null;
     runState.child = child;
@@ -2489,7 +2502,23 @@ async function startBackup(profile, password) {
   }
 
   let stdoutBuffer = "";
+  runState.lastActivityAt = Date.now();
+  const stallCheckInterval = setInterval(() => {
+    if (!runState.running || runState.stopRequested) {
+      clearInterval(stallCheckInterval);
+      return;
+    }
+    if (Date.now() - runState.lastActivityAt > BACKUP_STALL_TIMEOUT_MS) {
+      clearInterval(stallCheckInterval);
+      runState.stalledKill = true;
+      terminateBackupRun(runState).catch(() => {});
+    }
+  }, 60 * 1000);
+  if (typeof stallCheckInterval.unref === "function") stallCheckInterval.unref();
+  runState.stallTimer = stallCheckInterval;
+
   child.stdout.on("data", (chunk) => {
+    runState.lastActivityAt = Date.now();
     stdoutBuffer += chunk.toString();
     const lines = stdoutBuffer.split(/\r?\n/);
     stdoutBuffer = lines.pop() ?? "";
@@ -2497,11 +2526,13 @@ async function startBackup(profile, password) {
   });
 
   child.stderr.on("data", (chunk) => {
+    runState.lastActivityAt = Date.now();
     const text = chunk.toString();
     runState.stderr = `${runState.stderr}${text}`.slice(-1000);
   });
 
   child.on("error", (error) => {
+    if (runState.stallTimer) clearInterval(runState.stallTimer);
     if (shouldRetryBackupForNetwork(profile, error)) {
       scheduleNetworkBackupRetry(profile, resolvedPassword, error instanceof Error ? error.message : String(error), runState);
       return;
@@ -2521,9 +2552,14 @@ async function startBackup(profile, password) {
   });
 
   child.on("close", (code) => {
+    if (runState.stallTimer) clearInterval(runState.stallTimer);
     if (runState.failureHandled) return;
     if (stdoutBuffer.trim()) updateBackupProgressFromLine(profileId, stdoutBuffer);
+    if (runState.stalledKill && !runState.stopRequested) {
+      runState.stderr = `${runState.stderr}\nBackup timed out: no progress for 10 minutes.`.trim();
+    }
     if (!runState.stopRequested && code === 0) {
+      knownRepositories.add(profile.repository?.target);
       updateProfileBackupTimestamps(profileId, {
         lastBackupCompletedAt: new Date().toISOString(),
         pendingBackupStartedAt: undefined
@@ -2797,7 +2833,13 @@ async function terminateProcessTree(pid) {
 }
 
 async function ensureResticRepository(resticPath, repositoryTarget, env, onChild) {
-  if (await canOpenResticRepository(resticPath, repositoryTarget, env, onChild)) return;
+  const target = typeof repositoryTarget === "string" ? repositoryTarget : repositoryTarget?.target;
+  if (target && knownRepositories.has(target)) return;
+
+  if (await canOpenResticRepository(resticPath, repositoryTarget, env, onChild)) {
+    if (target) knownRepositories.add(target);
+    return;
+  }
 
   try {
     await runProcess(resticPath, [...resticRepositoryArgs(repositoryTarget), "init"], {
@@ -2805,8 +2847,10 @@ async function ensureResticRepository(resticPath, repositoryTarget, env, onChild
       onChild,
       timeoutMs: RESTIC_REPOSITORY_TIMEOUT_MS
     });
+    if (target) knownRepositories.add(target);
   } catch (error) {
     if (!isExistingResticRepositoryError(error)) throw error;
+    if (target) knownRepositories.add(target);
   }
 }
 
