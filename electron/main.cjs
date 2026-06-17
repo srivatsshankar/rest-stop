@@ -51,6 +51,8 @@ let cachedRestic = null;
 let cachedRclone = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const NETWORK_RETRY_MS = 2 * 60 * 1000;
+const MAX_NETWORK_RETRY_MS = 60 * 60 * 1000;
+const RESTIC_REPOSITORY_TIMEOUT_MS = 10 * 60 * 1000;
 const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
 const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
 const NOTIFICATION_LOG_FILE = "notifications.json";
@@ -61,15 +63,18 @@ const DRIVE_RCLONE_RESTIC_ARGS = [
   "--fast-list",
   "--b2-hard-delete",
   "--drive-use-trash=false",
-  "--checkers 4",
-  "--tpslimit 8",
-  "--tpslimit-burst 8",
-  "--drive-pacer-min-sleep 200ms",
-  "--drive-pacer-burst 20",
-  "--low-level-retries 20",
-  "--retries 8",
-  "--retries-sleep 10s",
-  "--timeout 10m",
+  "--checkers 2",
+  "--transfers 2",
+  "--tpslimit 4",
+  "--tpslimit-burst 4",
+  "--drive-pacer-min-sleep 500ms",
+  "--drive-pacer-burst 10",
+  "--drive-chunk-size 32M",
+  "--low-level-retries 50",
+  "--retries 20",
+  "--retries-sleep 30s",
+  "--timeout 30m",
+  "--contimeout 1m",
   "--drive-stop-on-upload-limit"
 ].join(" ");
 const rcloneDirectoryCache = new Map();
@@ -123,12 +128,7 @@ const rcloneBackends = {
   drive: {
     label: "Google Drive",
     auth: "oauth",
-    config: ["scope", "drive"],
-    oauthClientFields: ["client_id", "client_secret"],
-    fields: [
-      { key: "client_id", configKey: "client_id", label: "Google Drive client ID", required: false },
-      { key: "client_secret", configKey: "client_secret", label: "Google Drive client secret", required: false, password: true }
-    ]
+    config: ["scope", "drive"]
   },
   onedrive: { label: "OneDrive", auth: "oauth", config: ["drive_type", "personal"] },
   dropbox: { label: "Dropbox", auth: "oauth", config: [] },
@@ -940,14 +940,14 @@ async function configureRcloneRemote(options) {
   }
 
   if (backendConfig.auth === "oauth") {
-    const oauthClientFields = backendConfig.oauthClientFields ?? [];
-    const oauthClientValues = oauthClientFields.map((key) => String(configValues[key] ?? "").trim());
-    if (oauthClientValues.some(Boolean) && !oauthClientValues.every(Boolean)) {
-      throw new Error("Enter both the Google Drive client ID and client secret, or leave both blank.");
+    const oauthClientValues = backend === "drive" ? googleDriveOAuthClientValues() : [];
+    if (oauthClientValues.length) {
+      configArgs.push("client_id", oauthClientValues[0], "client_secret", oauthClientValues[1]);
+      shouldObscure = true;
     }
     let auth;
     try {
-      auth = await runProcess(rclone.path, ["authorize", backend, ...oauthClientValues.filter(Boolean)], rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 }));
+      auth = await runProcess(rclone.path, ["authorize", backend, ...oauthClientValues], rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 }));
     } catch (error) {
       throw friendlyRcloneAuthorizeError(error, backendConfig.label);
     }
@@ -984,6 +984,12 @@ async function configureRcloneRemote(options) {
     remoteName,
     rclone
   };
+}
+
+function googleDriveOAuthClientValues() {
+  const clientId = String(process.env.RESTSTOP_GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
+  const clientSecret = String(process.env.RESTSTOP_GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  return clientId && clientSecret ? [clientId, clientSecret] : [];
 }
 
 async function ensureRcloneConfigEncrypted(rclonePath) {
@@ -2051,6 +2057,7 @@ function resticRepositoryArgs(repositoryOrTarget) {
   const args = [];
   if (repositoryTarget.startsWith("rclone:")) {
     args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget)}`);
+    args.push("-o", "rclone.timeout=5m");
   }
   return [...args, "-r", repositoryTarget];
 }
@@ -2086,7 +2093,7 @@ async function listRestoreSnapshots(options) {
   const env = await resticEnvironmentForRepository(repository, password);
   const result = await runProcess(restic.path, [...resticRepositoryArgs(repository), "snapshots", "--json"], {
     env,
-    timeoutMs: 2 * 60 * 1000
+    timeoutMs: RESTIC_REPOSITORY_TIMEOUT_MS
   });
   const snapshots = JSON.parse(result.stdout || "[]");
   const normalizedSnapshots = snapshots
@@ -2131,7 +2138,7 @@ async function restoreSnapshotNodes(repository, password, snapshotId) {
   const args = [...resticRepositoryArgs(repository), "ls", snapshotId, "--json"];
   const result = await runProcess(restic.path, args, {
     env,
-    timeoutMs: 2 * 60 * 1000
+    timeoutMs: RESTIC_REPOSITORY_TIMEOUT_MS
   });
   const nodes = parseResticJsonLines(result.stdout)
     .filter((item) => !item.struct_type || item.struct_type === "node")
@@ -2542,8 +2549,9 @@ function scheduleNetworkBackupRetry(profile, password, reason, currentState = {}
   clearBackupRetry(profileId);
   markBackupPending(profileId, currentState.startedAt);
 
-  const retryAt = new Date(Date.now() + NETWORK_RETRY_MS);
-  const retryTimer = setTimeout(() => retryNetworkBackup(profileId), NETWORK_RETRY_MS);
+  const retryDelayMs = nextBackupRetryDelayMs(currentState);
+  const retryAt = new Date(Date.now() + retryDelayMs);
+  const retryTimer = setTimeout(() => retryNetworkBackup(profileId), retryDelayMs);
   if (typeof retryTimer.unref === "function") retryTimer.unref();
 
   currentState.failureHandled = true;
@@ -2556,6 +2564,7 @@ function scheduleNetworkBackupRetry(profile, password, reason, currentState = {}
     pid: null,
     retryTimer,
     retryAt: retryAt.toISOString(),
+    retryDelayMs,
     retryProfile: profile,
     retryPassword: password,
     retryReason: String(reason ?? ""),
@@ -2586,7 +2595,7 @@ async function retryNetworkBackup(profileId) {
     await startBackup(profile, state.retryPassword ?? "");
   } catch (error) {
     if (shouldRetryBackupForNetwork(profile, error)) {
-      scheduleNetworkBackupRetry(profile, state.retryPassword ?? "", error instanceof Error ? error.message : String(error));
+      scheduleNetworkBackupRetry(profile, state.retryPassword ?? "", error instanceof Error ? error.message : String(error), state);
       return;
     }
     const failureMessage = formatBackupFailureMessage(profile, error);
@@ -2604,6 +2613,12 @@ async function retryNetworkBackup(profileId) {
     notifyBackupFailure(profile, error);
     installPendingUpdateWhenIdle();
   }
+}
+
+function nextBackupRetryDelayMs(currentState = {}) {
+  const previousDelayMs = Number(currentState.retryDelayMs ?? 0);
+  if (!Number.isFinite(previousDelayMs) || previousDelayMs <= 0) return NETWORK_RETRY_MS;
+  return Math.min(previousDelayMs * 2, MAX_NETWORK_RETRY_MS);
 }
 
 function clearBackupRetry(profileId) {
@@ -2656,7 +2671,7 @@ function isNetworkPath(target) {
 }
 
 function isNetworkError(error) {
-  return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|temporary failure|transport|tls handshake|broken pipe/i.test(errorOutput(error));
+  return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|temporary failure|temporary error|transport|tls handshake|broken pipe|rate.?limit|too many requests|try again later|backend error|rclone:\s*5|HTTP 429|HTTP 500|HTTP 502|HTTP 503|HTTP 504/i.test(errorOutput(error));
 }
 
 function markBackupPending(profileId, startedAt = new Date().toISOString()) {
@@ -2775,7 +2790,7 @@ async function ensureResticRepository(resticPath, repositoryTarget, env, onChild
     await runProcess(resticPath, [...resticRepositoryArgs(repositoryTarget), "init"], {
       env,
       onChild,
-      timeoutMs: 2 * 60 * 1000
+      timeoutMs: RESTIC_REPOSITORY_TIMEOUT_MS
     });
   } catch (error) {
     if (!isExistingResticRepositoryError(error)) throw error;
@@ -2787,7 +2802,7 @@ async function canOpenResticRepository(resticPath, repositoryTarget, env, onChil
     await runProcess(resticPath, [...resticRepositoryArgs(repositoryTarget), "snapshots", "--json"], {
       env,
       onChild,
-      timeoutMs: 2 * 60 * 1000
+      timeoutMs: RESTIC_REPOSITORY_TIMEOUT_MS
     });
     return true;
   } catch (error) {
