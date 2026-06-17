@@ -56,27 +56,40 @@ const RESTIC_REPOSITORY_TIMEOUT_MS = 10 * 60 * 1000;
 const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
 const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
 const NOTIFICATION_LOG_FILE = "notifications.json";
-const DEFAULT_RCLONE_RESTIC_ARGS = "serve restic --stdio --fast-list --b2-hard-delete";
-const DRIVE_RCLONE_RESTIC_ARGS = [
+const BASE_RCLONE_RESTIC_ARGS = [
   "serve restic",
   "--stdio",
   "--fast-list",
   "--b2-hard-delete",
-  "--drive-use-trash=false",
-  "--checkers 2",
-  "--transfers 2",
-  "--tpslimit 4",
-  "--tpslimit-burst 4",
-  "--drive-pacer-min-sleep 500ms",
-  "--drive-pacer-burst 10",
-  "--drive-chunk-size 32M",
-  "--low-level-retries 50",
-  "--retries 20",
-  "--retries-sleep 30s",
-  "--timeout 30m",
-  "--contimeout 1m",
-  "--drive-stop-on-upload-limit"
-].join(" ");
+  "--checkers 4",
+  "--transfers 4",
+  "--low-level-retries 10",
+  "--retries 5",
+  "--retries-sleep 10s",
+  "--timeout 5m",
+  "--contimeout 30s"
+];
+const RCLONE_BACKEND_EXTRAS = {
+  drive: [
+    "--drive-use-trash=false",
+    "--tpslimit 8",
+    "--tpslimit-burst 12",
+    "--drive-pacer-min-sleep 200ms",
+    "--drive-pacer-burst 16",
+    "--drive-chunk-size 16M",
+    "--drive-stop-on-upload-limit"
+  ],
+  onedrive: [
+    "--tpslimit 6",
+    "--tpslimit-burst 10"
+  ],
+  mega: [
+    "--checkers 2",
+    "--transfers 2",
+    "--tpslimit 4",
+    "--tpslimit-burst 4"
+  ]
+};
 const rcloneDirectoryCache = new Map();
 const restoreSnapshotCache = new Map();
 const restoreFileTreeCache = new Map();
@@ -2057,15 +2070,15 @@ function resticRepositoryArgs(repositoryOrTarget) {
   const args = [];
   if (repositoryTarget.startsWith("rclone:")) {
     args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget)}`);
-    args.push("-o", "rclone.timeout=5m");
+    args.push("-o", "rclone.timeout=15m");
   }
   return [...args, "-r", repositoryTarget];
 }
 
 function rcloneResticArgs(repositoryOrTarget) {
-  return typeof repositoryOrTarget === "object" && repositoryOrTarget?.rcloneBackend === "drive"
-    ? DRIVE_RCLONE_RESTIC_ARGS
-    : DEFAULT_RCLONE_RESTIC_ARGS;
+  const backend = typeof repositoryOrTarget === "object" ? repositoryOrTarget?.rcloneBackend : null;
+  const extras = (backend && RCLONE_BACKEND_EXTRAS[backend]) || [];
+  return [...BASE_RCLONE_RESTIC_ARGS, ...extras].join(" ");
 }
 
 function deleteLocalRepository(target) {
