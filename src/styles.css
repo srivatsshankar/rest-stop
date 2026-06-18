@@ -77,12 +77,24 @@ button:disabled {
   margin-top: 1.75rem;
 }
 
+.performance-section {
+  margin-top: 1.75rem;
+}
+
 .config-section {
   margin-top: 1.25rem;
 }
 
 .backup-defaults-section {
   margin-top: 1.25rem;
+}
+
+.tools-section {
+  margin-top: 1.25rem;
+}
+
+.tool-status-card {
+  margin-top: 0.35rem;
 }
 
 .about-section {
@@ -129,7 +141,7 @@ button:disabled {
 .notification-log-list {
   display: grid;
   max-height: 26rem;
-  gap: 0.65rem;
+  gap: 0.45rem;
   list-style: none;
   overflow: auto;
   padding: 0;
@@ -137,40 +149,78 @@ button:disabled {
 
 .notification-log-list li {
   display: grid;
-  gap: 0.4rem;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid rgb(29 37 44 / 10%);
   border-radius: 0.375rem;
   background: #fbfaf7;
-  padding: 0.85rem;
+  padding: 0.55rem;
 }
 
-.notification-log-list li > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
+.notification-log-summary {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  text-align: left;
+}
+
+.notification-log-summary:hover .notification-log-title {
+  color: #245247;
+}
+
+.notification-log-summary.static {
+  cursor: default;
+}
+
+.notification-log-summary.static:hover .notification-log-title {
+  color: #1d252c;
+}
+
+.notification-expand-icon {
+  color: #245247;
+  font-size: 0.72rem;
+}
+
+.notification-log-summary-copy {
+  min-width: 0;
 }
 
 .notification-log-title {
-  margin: 0;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
   color: #1d252c;
-  font-size: 0.94rem;
-  font-weight: 760;
+  font-size: 0.86rem;
+  font-weight: 740;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notification-log-list time {
   flex-shrink: 0;
   color: rgb(29 37 44 / 55%);
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 .notification-log-body {
-  margin: 0;
+  max-height: 12rem;
+  margin: 0.5rem 0 0 1.5rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
   color: rgb(29 37 44 / 68%);
-  font-size: 0.86rem;
+  font-size: 0.78rem;
   font-weight: 600;
   line-height: 1.4;
+}
+
+.notification-log-body:focus {
+  outline: 2px solid rgb(36 82 71 / 28%);
+  outline-offset: 2px;
 }
 
 .theme-selector {
@@ -707,6 +757,15 @@ button:disabled {
   color: #f4f1ea;
 }
 
+[data-theme="dark"] .notification-log-summary:hover .notification-log-title,
+[data-theme="dark"] .notification-expand-icon {
+  color: #8fc3b5;
+}
+
+[data-theme="dark"] .notification-log-summary.static:hover .notification-log-title {
+  color: #f4f1ea;
+}
+
 [data-theme="dark"] .border-ink\/10,
 [data-theme="dark"] .border-ink\/20,
 [data-theme="dark"] .border-ink\/14 {
@@ -1065,12 +1124,12 @@ button:disabled {
   box-shadow: inset 0 0 0 1px rgb(36 82 71 / 8%);
 }
 
-.toggle-row input:checked + span::before {
+.toggle-row input:checked+span::before {
   border-color: #245247;
   background: #245247;
 }
 
-.toggle-row input:checked + span::after {
+.toggle-row input:checked+span::after {
   opacity: 1;
   transform: translateY(-58%) rotate(40deg) scale(1);
 }
@@ -1095,8 +1154,32 @@ button:disabled {
   cursor: pointer;
 }
 
-.settings-toggle > span:first-child {
+.settings-toggle:has(.settings-toggle-copy) {
+  align-items: flex-start;
+}
+
+.settings-toggle>span:first-child {
   font-weight: 600;
+}
+
+.settings-toggle-copy {
+  display: grid;
+  flex: 1;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.settings-toggle-copy span {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.settings-toggle-copy p {
+  color: rgb(29 37 44 / 65%);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .settings-toggle input {
@@ -1128,15 +1211,15 @@ button:disabled {
   transition: transform 0.16s ease;
 }
 
-.settings-toggle input:checked + .settings-toggle-control {
+.settings-toggle input:checked+.settings-toggle-control {
   background: #245247;
 }
 
-.settings-toggle input:checked + .settings-toggle-control::after {
+.settings-toggle input:checked+.settings-toggle-control::after {
   transform: translateX(1.3rem);
 }
 
-.settings-toggle input:focus-visible + .settings-toggle-control {
+.settings-toggle input:focus-visible+.settings-toggle-control {
   box-shadow: 0 0 0 3px rgb(36 82 71 / 18%);
 }
 
@@ -1523,6 +1606,32 @@ button:disabled {
   color: #245247;
 }
 
+.update-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.update-status-row>span:first-child,
+.update-status-summary .backup-progress-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.update-status-row .backup-progress-value {
+  flex: 0 0 auto;
+}
+
+.update-status-summary {
+  align-items: flex-start;
+  margin-top: 0.5rem;
+}
+
+.update-status-summary .backup-progress-label {
+  margin-top: 0;
+}
+
 .backup-progress-label {
   margin-top: 0.5rem;
   color: rgb(29 37 44 / 65%);
@@ -1617,10 +1726,18 @@ button:disabled {
 }
 
 @media (max-width: 640px) {
-  .notifications-view-header,
-  .notification-log-list li > div {
+
+  .notifications-view-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .notification-log-summary {
+    grid-template-columns: 1rem minmax(0, 1fr);
+  }
+
+  .notification-log-summary time {
+    grid-column: 2;
   }
 
   .backup-detail-row {
@@ -1656,6 +1773,7 @@ button:disabled {
   0% {
     transform: translateX(-110%);
   }
+
   100% {
     transform: translateX(300%);
   }
@@ -1876,12 +1994,12 @@ button:disabled {
   box-shadow: inset 0 0 0 1px rgb(143 195 181 / 10%);
 }
 
-[data-theme="dark"] .toggle-row input:checked + span::before {
+[data-theme="dark"] .toggle-row input:checked+span::before {
   border-color: #8fc3b5;
   background: #8fc3b5;
 }
 
-[data-theme="dark"] .toggle-row input:checked + span::after {
+[data-theme="dark"] .toggle-row input:checked+span::after {
   border-color: #101415;
 }
 
@@ -1893,8 +2011,12 @@ button:disabled {
   background: rgb(244 241 234 / 24%);
 }
 
-[data-theme="dark"] .settings-toggle input:checked + .settings-toggle-control {
+[data-theme="dark"] .settings-toggle input:checked+.settings-toggle-control {
   background: #8fc3b5;
+}
+
+[data-theme="dark"] .settings-toggle-copy p {
+  color: rgb(244 241 234 / 68%);
 }
 
 [data-theme="dark"] .frequency-summary {

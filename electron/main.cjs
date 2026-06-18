@@ -53,7 +53,8 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const NETWORK_RETRY_MS = 2 * 60 * 1000;
 const MAX_NETWORK_RETRY_MS = 60 * 60 * 1000;
 const RESTIC_REPOSITORY_TIMEOUT_MS = 10 * 60 * 1000;
-const BACKUP_STALL_TIMEOUT_MS = 10 * 60 * 1000;
+const BACKUP_STALL_TIMEOUT_MS = 20 * 60 * 1000;
+const AUTH_RETRY_DELAY_MS = 5 * 1000;
 const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
 const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
 const NOTIFICATION_LOG_FILE = "notifications.json";
@@ -68,9 +69,35 @@ const BASE_RCLONE_RESTIC_ARGS = [
   "--retries 5",
   "--retries-sleep 10s",
   "--timeout 5m",
-  "--contimeout 30s"
+  "--contimeout 30s",
+  "--buffer-size 32M",
+  "--expect-continue-timeout 5s"
 ];
-const RCLONE_BACKEND_EXTRAS = {
+const RCLONE_BACKEND_EXTRAS_HIGH_PERF = {
+  drive: [
+    "--drive-use-trash=false",
+    "--tpslimit 10",
+    "--tpslimit-burst 12",
+    "--drive-pacer-min-sleep 200ms",
+    "--drive-pacer-burst 16",
+    "--drive-chunk-size 64M",
+    "--drive-stop-on-upload-limit",
+    "--drive-acknowledge-abuse",
+    "--transfers 8"
+  ],
+  onedrive: [
+    "--tpslimit 6",
+    "--tpslimit-burst 10",
+    "--onedrive-chunk-size 10M"
+  ],
+  mega: [
+    "--checkers 2",
+    "--transfers 2",
+    "--tpslimit 4",
+    "--tpslimit-burst 4"
+  ]
+};
+const RCLONE_BACKEND_EXTRAS_STANDARD = {
   drive: [
     "--drive-use-trash=false",
     "--tpslimit 8",
@@ -445,6 +472,41 @@ function getUpdateStatus() {
   };
 }
 
+async function checkForUpdatesNow() {
+  if (!app.isPackaged) {
+    configureAutoUpdater();
+    return getUpdateStatus();
+  }
+
+  if (!updaterConfigured) configureAutoUpdater();
+  if (updateReadyToInstall) {
+    installPendingUpdateWhenIdle();
+    return getUpdateStatus();
+  }
+
+  setUpdateStatus({
+    status: "checking",
+    percent: null,
+    pendingInstall: false,
+    message: "Checking for updates..."
+  });
+
+  try {
+    autoUpdater.autoDownload = getAutoUpdatesEnabled();
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    log.error("Manual update check failed", error);
+    setUpdateStatus({
+      status: "error",
+      percent: null,
+      pendingInstall: updateReadyToInstall,
+      message: error instanceof Error ? error.message : "Unable to check for updates."
+    });
+  }
+
+  return getUpdateStatus();
+}
+
 function setUpdateStatus(nextStatus) {
   updateStatus = {
     ...updateStatus,
@@ -505,9 +567,12 @@ function registerIpc() {
   ipcMain.handle("restore:start", (_event, options) => startRestore(options));
   ipcMain.handle("settings:get", () => readSettings());
   ipcMain.handle("settings:save-backup-defaults", (_event, settings) => saveBackupDefaults(settings));
+  ipcMain.handle("settings:get-high-performance", () => getHighPerformanceEnabled());
+  ipcMain.handle("settings:set-high-performance", (_event, enabled) => setHighPerformanceEnabled(enabled));
   ipcMain.handle("updates:get-auto-enabled", () => getAutoUpdatesEnabled());
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
   ipcMain.handle("updates:get-status", getUpdateStatus);
+  ipcMain.handle("updates:check-now", checkForUpdatesNow);
   ipcMain.handle("config:export", exportConfig);
   ipcMain.handle("config:restore", restoreConfig);
   ipcMain.handle("config:export-backup", (_event, profileId) => exportBackupConfig(profileId));
@@ -1478,7 +1543,8 @@ function normalizeSettings(settings) {
   const defaultExcludes = normalizeDefaultExcludePatterns(settings.defaultExcludes);
   return {
     ...settings,
-    defaultExcludes
+    defaultExcludes,
+    highPerformance: settings.highPerformance !== false
   };
 }
 
@@ -1631,6 +1697,17 @@ function friendlyRcloneBackupError(profile, output) {
   return sanitizeRcloneOutput(output) || "The backup failed, but rclone did not return details.";
 }
 
+async function retryOnTransientAuth(fn, profile) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (profile?.repository?.type !== "rclone" || !isTransientAuthError(error)) throw error;
+    log.warn("Transient auth error detected, retrying once after delay", errorOutput(error).slice(0, 200));
+    await new Promise((resolve) => setTimeout(resolve, AUTH_RETRY_DELAY_MS));
+    return fn();
+  }
+}
+
 function rcloneBackendLabel(backend) {
   return rcloneBackends[String(backend ?? "")]?.label ?? "Rclone";
 }
@@ -1704,6 +1781,19 @@ function saveBackupDefaults(settings) {
   };
   writeSettings(nextSettings);
   return readSettings();
+}
+
+function getHighPerformanceEnabled() {
+  return readSettings().highPerformance !== false;
+}
+
+function setHighPerformanceEnabled(enabled) {
+  const highPerformance = Boolean(enabled);
+  writeSettings({
+    ...readSettings(),
+    highPerformance
+  });
+  return highPerformance;
 }
 
 function getAutoUpdatesEnabled() {
@@ -1783,14 +1873,18 @@ async function restoreConfig() {
 
 async function loadBackupConfig() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "Load backup config",
+    title: "Load existing backup",
     properties: ["openFile"],
-    filters: [{ name: "JSON", extensions: ["json"] }]
+    filters: [
+      { name: "Backup JSON", extensions: ["json"] },
+      { name: "All files", extensions: ["*"] }
+    ]
   });
   if (result.canceled || !result.filePaths[0]) return { cancelled: true };
 
-  const raw = JSON.parse(fs.readFileSync(result.filePaths[0], "utf8"));
-  const profile = backupProfileFromConfig(raw);
+  const filePath = result.filePaths[0];
+  const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  const profile = backupProfileFromConfig(raw, filePath);
   const config = readConfig();
   const loadedProfile = prepareLoadedProfile(profile, config.profiles);
   const profiles = [...config.profiles, loadedProfile];
@@ -1801,23 +1895,58 @@ async function loadBackupConfig() {
 
   return {
     cancelled: false,
-    path: result.filePaths[0],
+    path: filePath,
     profile: sanitizeProfileForRenderer(loadedProfile),
     profiles: profiles.map(sanitizeProfileForRenderer)
   };
 }
 
-function backupProfileFromConfig(config) {
+function backupProfileFromConfig(config, filePath) {
   const profiles = Array.isArray(config?.profiles) ? config.profiles : null;
   const profile = profiles?.length === 1 ? profiles[0] : looksLikeProfile(config) ? config : null;
-  if (!profile) throw new Error("Choose a backup config file that contains one backup.");
-  const normalized = normalizeStoredProfile(profile);
-  if (!looksLikeProfile(normalized)) throw new Error("Choose a backup config file that contains one backup.");
+  const normalized = profile ? normalizeStoredProfile(profile) : looksLikeResticRepositoryConfig(config) ? backupProfileFromResticConfig(config, filePath) : null;
+  if (!looksLikeProfile(normalized)) throw new Error("Choose a Rest Stop backup JSON or a local restic repository config file.");
   return normalized;
 }
 
 function looksLikeProfile(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value) && value.repository && Array.isArray(value.sources));
+}
+
+function looksLikeResticRepositoryConfig(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && typeof value.id === "string" && typeof value.version === "number");
+}
+
+function backupProfileFromResticConfig(_config, filePath) {
+  const repositoryPath = path.dirname(filePath);
+  const repositoryName = path.basename(repositoryPath) || "Existing backup";
+  return {
+    id: crypto.randomUUID(),
+    name: repositoryName,
+    description: "Loaded from an existing restic repository config.",
+    encryptionEnabled: true,
+    passwordSet: false,
+    repository: {
+      type: "local",
+      target: repositoryPath
+    },
+    sources: [],
+    excludes: DEFAULT_EXCLUDES,
+    schedule: { mode: "manual", every: 1, unit: "hours" },
+    schedulePaused: true,
+    retention: {
+      mode: "years",
+      years: 1,
+      snapshots: 30,
+      latest: 30,
+      hourly: 0,
+      daily: 7,
+      weekly: 4,
+      monthly: 12,
+      yearly: 3
+    },
+    createdAt: new Date().toISOString()
+  };
 }
 
 function prepareLoadedProfile(profile, existingProfiles) {
@@ -2072,14 +2201,16 @@ function resticRepositoryArgs(repositoryOrTarget) {
   const args = [];
   if (repositoryTarget.startsWith("rclone:")) {
     args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget)}`);
-    args.push("-o", "rclone.timeout=15m");
+    args.push("-o", "rclone.timeout=30m");
   }
   return [...args, "-r", repositoryTarget];
 }
 
 function rcloneResticArgs(repositoryOrTarget) {
   const backend = typeof repositoryOrTarget === "object" ? repositoryOrTarget?.rcloneBackend : null;
-  const extras = (backend && RCLONE_BACKEND_EXTRAS[backend]) || [];
+  const highPerf = getHighPerformanceEnabled();
+  const backendExtras = highPerf ? RCLONE_BACKEND_EXTRAS_HIGH_PERF : RCLONE_BACKEND_EXTRAS_STANDARD;
+  const extras = (backend && backendExtras[backend]) || [];
   const combined = [...BASE_RCLONE_RESTIC_ARGS, ...extras];
   const seen = new Map();
   for (let i = 0; i < combined.length; i++) {
@@ -2451,7 +2582,7 @@ async function startBackup(profile, password) {
       if (rclone?.path) env = envWithRcloneConfigPassword(envWithToolDirectory(env, rclone.path));
     }
 
-    await ensureResticRepository(restic.path, profile.repository, env, trackResticChild);
+    await retryOnTransientAuth(() => ensureResticRepository(restic.path, profile.repository, env, trackResticChild), profile);
     if (runState.stopRequested) {
       activeBackupRuns.set(profileId, {
         ...runState,
@@ -2471,7 +2602,7 @@ async function startBackup(profile, password) {
     runState.child = null;
     const excludeArgs = normalizeExcludePatterns(profile.excludes).flatMap((pattern) => ["--exclude", pattern]);
     const resticBackupFlags = ["--retry-lock", "5m"];
-    if (profile.repository.type === "rclone") resticBackupFlags.push("--pack-size", "32");
+    if (profile.repository.type === "rclone") resticBackupFlags.push("--pack-size", getHighPerformanceEnabled() ? "64" : "32");
     const args = ["--json", ...resticRepositoryArgs(profile.repository), "backup", ...resticBackupFlags, ...excludeArgs, ...profile.sources];
     child = childProcess.spawn(restic.path, args, { env, windowsHide: true });
     runState.pid = child.pid ?? null;
@@ -2720,7 +2851,12 @@ function isNetworkPath(target) {
 }
 
 function isNetworkError(error) {
-  return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|temporary failure|temporary error|transport|tls handshake|broken pipe|rate.?limit|too many requests|try again later|backend error|rclone:\s*5|HTTP 429|HTTP 500|HTTP 502|HTTP 503|HTTP 504/i.test(errorOutput(error));
+  return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|temporary failure|temporary error|transport|tls handshake|broken pipe|rate.?limit|too many requests|try again later|backend error|rclone:\s*5|HTTP 429|HTTP 500|HTTP 502|HTTP 503|HTTP 504|userRateLimitExceeded|dailyLimitExceeded|storageQuotaExceeded|uploadRateLimitExceeded|quota/i.test(errorOutput(error));
+}
+
+function isTransientAuthError(error) {
+  const output = errorOutput(error);
+  return /invalid_grant/i.test(output) && !/revoked|consent_required|account_not_found/i.test(output);
 }
 
 function markBackupPending(profileId, startedAt = new Date().toISOString()) {

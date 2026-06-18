@@ -228,6 +228,7 @@ type UpdateStatus = {
 
 type AppSettings = {
   autoUpdatesEnabled?: boolean;
+  highPerformance?: boolean;
   defaultExcludes: string[];
 };
 
@@ -259,9 +260,12 @@ type ReststopBridge = {
   startRestore: (options: RestoreStartOptions) => Promise<{ message: string }>;
   getSettings: () => Promise<AppSettings>;
   saveBackupDefaults: (settings: Pick<AppSettings, "defaultExcludes">) => Promise<AppSettings>;
+  getHighPerformanceEnabled: () => Promise<boolean>;
+  setHighPerformanceEnabled: (enabled: boolean) => Promise<boolean>;
   getAutoUpdatesEnabled: () => Promise<boolean>;
   setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
   getUpdateStatus: () => Promise<UpdateStatus>;
+  checkForUpdates: () => Promise<UpdateStatus>;
   exportConfig: () => Promise<{ cancelled: boolean; path?: string }>;
   restoreConfig: () => Promise<{ cancelled: boolean; path?: string; profiles?: BackupProfile[]; settings?: AppSettings }>;
   exportBackupConfig: (profileId: string) => Promise<{ cancelled: boolean; path?: string }>;
@@ -360,9 +364,20 @@ const fallbackBridge: ReststopBridge = {
   },
   getSettings: async () => ({ defaultExcludes: defaultExcludePatterns }),
   saveBackupDefaults: async (settings) => ({ defaultExcludes: normalizeExcludePatterns(settings.defaultExcludes) }),
+  getHighPerformanceEnabled: async () => true,
+  setHighPerformanceEnabled: async (enabled) => enabled,
   getAutoUpdatesEnabled: async () => true,
   setAutoUpdatesEnabled: async (enabled) => enabled,
   getUpdateStatus: async () => ({
+    enabled: true,
+    status: "unavailable",
+    version: null,
+    percent: null,
+    pendingInstall: false,
+    message: "Update status is available in the installed app.",
+    checkedAt: new Date().toISOString()
+  }),
+  checkForUpdates: async () => ({
     enabled: true,
     status: "unavailable",
     version: null,
@@ -655,6 +670,8 @@ function App() {
   const [versionCounts, setVersionCounts] = useState<Record<string, BackupVersionCount>>({});
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
   const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [highPerformanceEnabled, setHighPerformanceEnabledState] = useState(true);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
     enabled: true,
     status: "checking",
@@ -686,10 +703,12 @@ function App() {
     bridge.getSettings()
       .then((settings) => {
         setAutoUpdatesEnabledState(settings.autoUpdatesEnabled !== false);
+        setHighPerformanceEnabledState(settings.highPerformance !== false);
         setDefaultExcludes(excludePatternsToText(settings.defaultExcludes));
       })
       .catch(() => {
         setAutoUpdatesEnabledState(true);
+        setHighPerformanceEnabledState(true);
         setDefaultExcludes(defaultExcludeText);
       });
   }, []);
@@ -766,7 +785,7 @@ function App() {
   }, [themeMode]);
 
   useEffect(() => {
-    bridge.setTaskbarStatus(taskbarStatusForActivity(backupStatus, restoreRuns)).catch(() => {});
+    bridge.setTaskbarStatus(taskbarStatusForActivity(backupStatus, restoreRuns)).catch(() => { });
   }, [backupStatus, restoreRuns]);
 
   const canGoBack = viewHistory.length > 0;
@@ -776,11 +795,11 @@ function App() {
     ? { label: `Backup and ${activeRestoreRuns.length === 1 ? "restore" : "restores"} running`, status: "combined" }
     : backupStatus.running
       ? { label: "Backups running", status: "running" }
-    : restoreRunning
-      ? { label: activeRestoreRuns.length === 1 ? "Restore running" : `${activeRestoreRuns.length} restores running`, status: "restore" }
-    : view === "restore"
-      ? { label: "Initializing restore", status: "initializing" }
-      : { label: "No backups running", status: "idle" };
+      : restoreRunning
+        ? { label: activeRestoreRuns.length === 1 ? "Restore running" : `${activeRestoreRuns.length} restores running`, status: "restore" }
+        : view === "restore"
+          ? { label: "Initializing restore", status: "initializing" }
+          : { label: "No backups running", status: "idle" };
 
   function navigateTo(nextView: AppView) {
     if (nextView === view) return;
@@ -830,6 +849,41 @@ function App() {
       await refreshUpdateStatus();
     } catch {
       setAutoUpdatesEnabledState((current) => !current);
+    }
+  }
+
+  async function runUpdateCheck() {
+    setUpdateChecking(true);
+    setUpdateStatus((current) => ({
+      ...current,
+      status: current.status === "unavailable" ? current.status : "checking",
+      percent: null,
+      message: current.status === "unavailable" ? current.message : "Checking for updates...",
+      checkedAt: new Date().toISOString()
+    }));
+    try {
+      const status = await bridge.checkForUpdates();
+      setUpdateStatus(status);
+      setAutoUpdatesEnabledState(status.enabled);
+    } catch {
+      setUpdateStatus((current) => ({
+        ...current,
+        status: "error",
+        percent: null,
+        message: "Update status is unavailable.",
+        checkedAt: new Date().toISOString()
+      }));
+    } finally {
+      setUpdateChecking(false);
+    }
+  }
+
+  async function handleHighPerformanceChange(enabled: boolean) {
+    setHighPerformanceEnabledState(enabled);
+    try {
+      setHighPerformanceEnabledState(await bridge.setHighPerformanceEnabled(enabled));
+    } catch {
+      setHighPerformanceEnabledState((current) => !current);
     }
   }
 
@@ -888,7 +942,7 @@ function App() {
     setConfigMessage("");
     try {
       const result = await bridge.loadBackupConfig();
-      if (result.cancelled) return;
+      if (result.cancelled) return false;
       const loadedProfiles = result.profiles ?? [];
       const loadedProfile = result.profile ?? loadedProfiles.find((profile) => profile.reviewRequired);
       setProfiles(loadedProfiles);
@@ -899,8 +953,10 @@ function App() {
       }
       setConfigMessage(`Backup loaded from ${result.path}. Confirm its password, sources, and backup location before running it.`);
       navigateTo("backup");
+      return true;
     } catch (error) {
       setConfigMessage(error instanceof Error ? error.message : "Unable to load the backup config.");
+      throw error;
     }
   }
 
@@ -1035,9 +1091,9 @@ function App() {
     } catch (error) {
       setBackupStatus((current) => ({
         ...current,
-      profileIds: [...new Set([...current.profileIds, profile.id])],
-      percentComplete: null,
-      progressLabel: error instanceof Error ? error.message : "Unable to update this backup schedule.",
+        profileIds: [...new Set([...current.profileIds, profile.id])],
+        percentComplete: null,
+        progressLabel: error instanceof Error ? error.message : "Unable to update this backup schedule.",
         checkedAt: new Date().toISOString()
       }));
     }
@@ -1125,13 +1181,13 @@ function App() {
     }));
     try {
       const status = await bridge.startBackup(profile, password);
-      if (persistPassword && password) bridge.savePassword(profile.id, password).catch(() => {});
+      if (persistPassword && password) bridge.savePassword(profile.id, password).catch(() => { });
       setVersionCounts((current) => {
         const { [profile.id]: _removed, ...remaining } = current;
         return remaining;
       });
       setBackupStatus(status);
-      bridge.getProfiles().then(setProfiles).catch(() => {});
+      bridge.getProfiles().then(setProfiles).catch(() => { });
     } catch (error) {
       setBackupStatus({
         running: false,
@@ -1275,9 +1331,6 @@ function App() {
                     <button className="menu-item" onClick={() => { navigateTo("restore"); setMenuOpen(false); }}>
                       <FontAwesomeIcon icon={faCloudArrowDown} /> Restore backup
                     </button>
-                    <button className="menu-item" onClick={() => { handleLoadBackupConfig(); setMenuOpen(false); }}>
-                      <FontAwesomeIcon icon={faArrowUp} /> Load backup
-                    </button>
                   </div>
                 ) : null}
               </div>
@@ -1293,6 +1346,8 @@ function App() {
                 rcloneChecking={rcloneChecking}
                 themeMode={themeMode}
                 autoUpdatesEnabled={autoUpdatesEnabled}
+                updateChecking={updateChecking}
+                highPerformanceEnabled={highPerformanceEnabled}
                 updateStatus={updateStatus}
                 defaultExcludes={defaultExcludes}
                 configMessage={configMessage}
@@ -1300,6 +1355,8 @@ function App() {
                 onCheckRclone={runRcloneCheck}
                 onThemeChange={setThemeMode}
                 onAutoUpdatesChange={handleAutoUpdatesChange}
+                onCheckUpdates={runUpdateCheck}
+                onHighPerformanceChange={handleHighPerformanceChange}
                 onDefaultExcludesChange={handleDefaultExcludesChange}
                 onExportConfig={handleExportConfig}
                 onRestoreConfig={handleRestoreConfig}
@@ -1320,6 +1377,7 @@ function App() {
                 profiles={profiles}
                 defaultExcludes={defaultExcludes}
                 onCancel={goBack}
+                onLoadExisting={handleLoadBackupConfig}
                 onSave={handleSave}
               />
             ) : null}
@@ -1445,6 +1503,17 @@ function NotificationsView({
   error: string;
   onRefresh: () => void;
 }) {
+  const [expandedNotificationIds, setExpandedNotificationIds] = useState<Set<string>>(() => new Set());
+
+  function toggleNotification(notificationId: string) {
+    setExpandedNotificationIds((current) => {
+      const next = new Set(current);
+      if (next.has(notificationId)) next.delete(notificationId);
+      else next.add(notificationId);
+      return next;
+    });
+  }
+
   return (
     <section className="notifications-view rounded-md border border-ink/10 bg-white p-5 shadow-sm">
       <div className="notifications-view-header">
@@ -1467,15 +1536,28 @@ function NotificationsView({
       ) : null}
       {notifications.length > 0 ? (
         <ul className="notification-log-list">
-          {notifications.map((notification) => (
-            <li key={notification.id}>
-              <div>
-                <p className="notification-log-title">{notification.title}</p>
-                <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
-              </div>
-              {notification.body ? <p className="notification-log-body">{notification.body}</p> : null}
-            </li>
-          ))}
+          {notifications.map((notification) => {
+            const hasBody = Boolean(notification.body?.trim());
+            const expanded = expandedNotificationIds.has(notification.id);
+
+            return (
+              <li key={notification.id}>
+                <button
+                  aria-expanded={hasBody ? expanded : undefined}
+                  className={`notification-log-summary ${hasBody ? "" : "static"}`}
+                  onClick={() => hasBody && toggleNotification(notification.id)}
+                  type="button"
+                >
+                  <FontAwesomeIcon className="notification-expand-icon" icon={hasBody ? expanded ? faChevronDown : faChevronRight : faBell} />
+                  <span className="notification-log-summary-copy">
+                    <span className="notification-log-title">{notification.title}</span>
+                  </span>
+                  <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
+                </button>
+                {hasBody && expanded ? <div className="notification-log-body" tabIndex={0}>{notification.body}</div> : null}
+              </li>
+            );
+          })}
         </ul>
       ) : null}
     </section>
@@ -1503,32 +1585,35 @@ function UpdateStatusBox({ status }: { status: UpdateStatus }) {
       : "An update is available"
     : status.status === "checking"
       ? "Checking for updates"
-    : status.status === "disabled"
-      ? "Automatic updates are off"
-    : status.status === "error"
-      ? "Update status unavailable"
-    : status.status === "unavailable"
-      ? "Update status unavailable"
-      : "Rest Stop is up to date";
+      : status.status === "disabled"
+        ? "Automatic updates are off"
+        : status.status === "error"
+          ? "Update status unavailable"
+          : status.status === "unavailable"
+            ? "Update status unavailable"
+            : "Rest Stop is up to date";
   const badge = status.pendingInstall
     ? "Pending installation"
     : status.status === "downloading" && percent !== null
       ? `${Math.round(percent)}%`
-    : status.status === "available"
-      ? "Available"
-    : status.status === "checking"
-      ? "Checking"
-    : status.status === "error"
-      ? "Attention"
-    : status.status === "disabled"
-      ? "Off"
-      : "Current";
+      : status.status === "available"
+        ? "Available"
+        : status.status === "checking"
+          ? "Checking"
+          : status.status === "error"
+            ? "Attention"
+            : status.status === "disabled"
+              ? "Off"
+              : "Current";
 
   return (
     <div className="update-status-box rounded-md border border-ink/10 bg-paper px-4 py-3">
-      <div className="backup-progress-heading">
+      <div className="update-status-row backup-progress-heading">
         <span>{title}</span>
         <span className={`backup-progress-value ${updateIsAvailable || status.status === "checking" ? "running" : "idle"}`}>{badge}</span>
+      </div>
+      <div className="update-status-row update-status-summary">
+        <p className="backup-progress-label">{status.message}</p>
       </div>
       {updateIsAvailable ? (
         <div className="progress-track" aria-label="Update download progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} role="progressbar">
@@ -1543,7 +1628,6 @@ function UpdateStatusBox({ status }: { status: UpdateStatus }) {
           </span>
         </div>
       ) : null}
-      <p className="backup-progress-label">{status.message}</p>
     </div>
   );
 }
@@ -1555,6 +1639,8 @@ function SettingsView({
   rcloneChecking,
   themeMode,
   autoUpdatesEnabled,
+  updateChecking,
+  highPerformanceEnabled,
   updateStatus,
   defaultExcludes,
   configMessage,
@@ -1562,6 +1648,8 @@ function SettingsView({
   onCheckRclone,
   onThemeChange,
   onAutoUpdatesChange,
+  onCheckUpdates,
+  onHighPerformanceChange,
   onDefaultExcludesChange,
   onExportConfig,
   onRestoreConfig
@@ -1572,6 +1660,8 @@ function SettingsView({
   rcloneChecking: boolean;
   themeMode: ThemeMode;
   autoUpdatesEnabled: boolean;
+  updateChecking: boolean;
+  highPerformanceEnabled: boolean;
   updateStatus: UpdateStatus;
   defaultExcludes: string;
   configMessage: string;
@@ -1579,41 +1669,19 @@ function SettingsView({
   onCheckRclone: () => void;
   onThemeChange: (mode: ThemeMode) => void;
   onAutoUpdatesChange: (enabled: boolean) => void;
+  onCheckUpdates: () => void;
+  onHighPerformanceChange: (enabled: boolean) => void;
   onDefaultExcludesChange: (value: string) => void;
   onExportConfig: () => void;
   onRestoreConfig: () => void;
 }) {
+  const updateIsChecking = updateChecking || updateStatus.status === "checking";
+
   return (
     <section className="settings-view rounded-md border border-ink/10 bg-white p-5 shadow-sm">
       <div className="mb-5">
         <h2 className="text-2xl font-semibold">Settings</h2>
       </div>
-
-      <section className="settings-section">
-        <p className="settings-label">Restic</p>
-        <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
-          <div className="flex flex-row items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <span className={`status-dot ${restic.installed ? "bg-pine" : "bg-brass"}`} />
-              <p className="text-sm font-semibold">{resticChecking ? "Checking or installing restic" : restic.installed ? "restic is installed" : "restic is not installed"}</p>
-            </div>
-            <button className="small-button justify-center" disabled={resticChecking} onClick={onCheckRestic}>
-              <FontAwesomeIcon className={resticChecking ? "animate-spin" : ""} icon={faRotateRight} /> Check again
-            </button>
-          </div>
-        </div>
-        <div className="mt-3 rounded-md border border-ink/10 bg-paper px-4 py-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <span className={`status-dot ${rclone.installed ? "bg-pine" : "bg-brass"}`} />
-              <p className="text-sm font-semibold">{rcloneChecking ? "Checking or installing Rclone" : rclone.installed ? "Rclone is installed" : "Rclone is not installed"}</p>
-            </div>
-            <button className="small-button justify-center" disabled={rcloneChecking} onClick={onCheckRclone}>
-              <FontAwesomeIcon className={rcloneChecking ? "animate-spin" : ""} icon={faRotateRight} /> Check again
-            </button>
-          </div>
-        </div>
-      </section>
 
       <section className="settings-section updates-section">
         <p className="settings-label">Updates</p>
@@ -1626,7 +1694,31 @@ function SettingsView({
           />
           <span aria-hidden="true" className="settings-toggle-control" />
         </label>
+        <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
+          <div className="flex flex-row items-center justify-between gap-3">
+            <p className="text-sm font-semibold">Check for updates</p>
+            <button className="small-button justify-center" disabled={updateIsChecking} onClick={onCheckUpdates} type="button">
+              <FontAwesomeIcon className={updateIsChecking ? "animate-spin" : ""} icon={faRotateRight} /> Check again
+            </button>
+          </div>
+        </div>
         <UpdateStatusBox status={updateStatus} />
+      </section>
+
+      <section className="settings-section performance-section">
+        <p className="settings-label">Performance</p>
+        <label className="settings-toggle">
+          <div className="settings-toggle-copy">
+            <span>High Performance</span>
+            <p>Uses larger transfer sizes and more concurrent uploads for cloud backends. Turn off if you have limited bandwidth or RAM.</p>
+          </div>
+          <input
+            checked={highPerformanceEnabled}
+            onChange={(event) => onHighPerformanceChange(event.target.checked)}
+            type="checkbox"
+          />
+          <span aria-hidden="true" className="settings-toggle-control" />
+        </label>
       </section>
 
       <section className="settings-section appearance-section">
@@ -1668,6 +1760,32 @@ function SettingsView({
       <section className="settings-section backup-defaults-section">
         <p className="settings-label">Backup defaults</p>
         <ExclusionFilterEditor label="Default exclusions" value={defaultExcludes} onChange={onDefaultExcludesChange} />
+      </section>
+
+      <section className="settings-section tools-section">
+        <p className="settings-label">Installation status</p>
+        <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
+          <div className="flex flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className={`status-dot ${restic.installed ? "bg-pine" : "bg-brass"}`} />
+              <p className="text-sm font-semibold">{resticChecking ? "Checking or installing restic" : restic.installed ? "restic is installed" : "restic is not installed"}</p>
+            </div>
+            <button className="small-button justify-center" disabled={resticChecking} onClick={onCheckRestic}>
+              <FontAwesomeIcon className={resticChecking ? "animate-spin" : ""} icon={faRotateRight} /> Check again
+            </button>
+          </div>
+        </div>
+        <div className="tool-status-card rounded-md border border-ink/10 bg-paper px-4 py-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <span className={`status-dot ${rclone.installed ? "bg-pine" : "bg-brass"}`} />
+              <p className="text-sm font-semibold">{rcloneChecking ? "Checking or installing Rclone" : rclone.installed ? "Rclone is installed" : "Rclone is not installed"}</p>
+            </div>
+            <button className="small-button justify-center" disabled={rcloneChecking} onClick={onCheckRclone}>
+              <FontAwesomeIcon className={rcloneChecking ? "animate-spin" : ""} icon={faRotateRight} /> Check again
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="settings-section about-section">
@@ -1809,17 +1927,17 @@ function BackupList({
           ? "Running"
           : backupError
             ? "Failed"
-          : isProfileWaiting
-            ? "Waiting for network"
-          : retryPending
-            ? "Retry pending"
-          : reviewRequired
-            ? "Review required"
-          : globalSchedulePaused && profile.schedule.mode === "recurring"
-            ? "Schedule paused globally"
-            : isProfileSchedulePaused
-              ? "Schedule paused"
-              : "Idle";
+            : isProfileWaiting
+              ? "Waiting for network"
+              : retryPending
+                ? "Retry pending"
+                : reviewRequired
+                  ? "Review required"
+                  : globalSchedulePaused && profile.schedule.mode === "recurring"
+                    ? "Schedule paused globally"
+                    : isProfileSchedulePaused
+                      ? "Schedule paused"
+                      : "Idle";
         const pauseLabel = profile.schedulePaused ? "Resume schedule" : "Pause schedule";
         const frequencyLabel = isSchedulePaused ? `${formatSchedule(profile.schedule)} (paused)` : formatSchedule(profile.schedule);
 
@@ -1911,9 +2029,9 @@ function BackupVersionIndicator({ versionCount }: { versionCount: BackupVersionC
     ? `${versionCount.count ?? 0} ${(versionCount.count ?? 0) === 1 ? "version" : "versions"}`
     : versionCount.status === "pending"
       ? "Review first"
-    : versionCount.status === "error"
-      ? "Versions unavailable"
-      : "Counting...";
+      : versionCount.status === "error"
+        ? "Versions unavailable"
+        : "Counting...";
 
   return (
     <div className={`backup-version-indicator ${versionCount.status}`}>
@@ -2379,15 +2497,18 @@ function BackupWizard({
   profiles,
   defaultExcludes,
   onCancel,
+  onLoadExisting,
   onSave
 }: {
   initialProfile: BackupProfile | null;
   profiles: BackupProfile[];
   defaultExcludes: string;
   onCancel: () => void;
+  onLoadExisting: () => Promise<boolean>;
   onSave: (profile: DraftProfile) => Promise<void>;
 }) {
   const [step, setStep] = useState(0);
+  const [creationStarted, setCreationStarted] = useState(Boolean(initialProfile?.id));
   const [draft, setDraft] = useState<DraftProfile>(() => draftFromProfile(initialProfile, defaultExcludes));
   const [selectedSchedulePreset, setSelectedSchedulePreset] = useState<SchedulePreset>(() => schedulePresetFromSchedule(draftFromProfile(initialProfile, defaultExcludes).schedule));
   const [locationOption, setLocationOption] = useState<LocationOption>(() => locationOptionFromProfile(initialProfile));
@@ -2401,7 +2522,16 @@ function BackupWizard({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const previousDraftNameRef = useRef(draft.name);
-  const steps = ["Details", "Location", "Data", "Frequency", "Retention", "Review"];
+  const creationChoiceRequired = !initialProfile?.id;
+  const steps = creationChoiceRequired
+    ? ["New/Existing", "Details", "Location", "Data", "Frequency", "Retention", "Review"]
+    : ["Details", "Location", "Data", "Frequency", "Retention", "Review"];
+  const detailsStep = creationChoiceRequired ? 1 : 0;
+  const locationStep = creationChoiceRequired ? 2 : 1;
+  const dataStep = creationChoiceRequired ? 3 : 2;
+  const frequencyStep = creationChoiceRequired ? 4 : 3;
+  const retentionStep = creationChoiceRequired ? 5 : 4;
+  const reviewStep = creationChoiceRequired ? 6 : 5;
   const selectedRcloneOption = rcloneBackendOptions.find((option) => option.value === rcloneBackend) ?? rcloneBackendOptions[0];
   const rcloneFields = rcloneConfigFields[rcloneBackend];
   const rcloneFieldsComplete = rcloneFields.every((field) => !field.required || rcloneConfig[field.key]?.trim());
@@ -2414,8 +2544,8 @@ function BackupWizard({
   const passwordFormComplete = restoringImportedBackup
     ? restoredPasswordConfirmed
     : editingBackup
-    ? !passwordFieldsTouched || (draft.currentPassword.length > 0 && newPasswordConfirmed)
-    : newPasswordConfirmed;
+      ? !passwordFieldsTouched || (draft.currentPassword.length > 0 && newPasswordConfirmed)
+      : newPasswordConfirmed;
   const passwordMessage = restoringImportedBackup
     ? !draft.currentPassword
       ? "Enter the backup password for this restored backup."
@@ -2425,27 +2555,27 @@ function BackupWizard({
           ? "Backup passwords do not match."
           : "Backup password is ready."
     : editingBackup
-    ? passwordFieldsTouched
-      ? !draft.currentPassword
-        ? "Enter the current backup password before changing it."
-        : !draft.password
-          ? "Enter the new backup password."
-          : !draft.passwordConfirm
-            ? "Confirm the new backup password."
-            : draft.password !== draft.passwordConfirm
-              ? "New passwords do not match."
-              : "Password change is ready."
-      : "Leave these fields blank to keep the current backup password."
-    : !draft.passwordConfirm
-      ? "Confirm the backup password before continuing."
-      : draft.password !== draft.passwordConfirm
-        ? "Passwords do not match."
-        : "Password confirmed.";
+      ? passwordFieldsTouched
+        ? !draft.currentPassword
+          ? "Enter the current backup password before changing it."
+          : !draft.password
+            ? "Enter the new backup password."
+            : !draft.passwordConfirm
+              ? "Confirm the new backup password."
+              : draft.password !== draft.passwordConfirm
+                ? "New passwords do not match."
+                : "Password change is ready."
+        : "Leave these fields blank to keep the current backup password."
+      : !draft.passwordConfirm
+        ? "Confirm the backup password before continuing."
+        : draft.password !== draft.passwordConfirm
+          ? "Passwords do not match."
+          : "Password confirmed.";
   const passwordMessageIsError = restoringImportedBackup
     ? Boolean(draft.passwordConfirm) && !passwordFormComplete
     : editingBackup
-    ? passwordFieldsTouched && !passwordFormComplete
-    : Boolean(draft.passwordConfirm) && !passwordFormComplete;
+      ? passwordFieldsTouched && !passwordFormComplete
+      : Boolean(draft.passwordConfirm) && !passwordFormComplete;
   const duplicateBackupName = draft.name.trim().length > 0 && profiles.some((profile) => profile.id !== initialProfile?.id && backupNameKey(profile.name) === backupNameKey(draft.name));
   const detailsComplete = draft.name.trim().length > 0 && !duplicateBackupName && passwordFormComplete;
   const rcloneAccountConnected = rcloneSetup.status === "success";
@@ -2454,18 +2584,28 @@ function BackupWizard({
   const rcloneReviewComplete = draft.repository.type !== "rclone" || rcloneAccountConnected || rcloneExistingLocationReady;
   const locationComplete = draft.repository.target.trim().length > 0 && rcloneReviewComplete;
   const canContinue = useMemo(() => {
-    if (step === 0) return detailsComplete;
-    if (step === 1) return locationComplete;
-    if (step === 2) return draft.sources.length > 0;
+    if (creationChoiceRequired && step === 0) return false;
+    if (step === detailsStep) return detailsComplete;
+    if (step === locationStep) return locationComplete;
+    if (step === dataStep) return draft.sources.length > 0;
     return true;
-  }, [detailsComplete, draft, locationComplete, step]);
-  const stepRequirements = useMemo(() => [
-    detailsComplete,
-    locationComplete,
-    draft.sources.length > 0,
-    true,
-    true
-  ], [detailsComplete, draft, locationComplete]);
+  }, [creationChoiceRequired, dataStep, detailsComplete, detailsStep, draft.sources.length, locationComplete, locationStep, step]);
+  const stepRequirements = useMemo(() => creationChoiceRequired
+    ? [
+      creationStarted,
+      detailsComplete,
+      locationComplete,
+      draft.sources.length > 0,
+      true,
+      true
+    ]
+    : [
+      detailsComplete,
+      locationComplete,
+      draft.sources.length > 0,
+      true,
+      true
+    ], [creationChoiceRequired, creationStarted, detailsComplete, draft.sources.length, locationComplete]);
   const canSave = stepRequirements.every(Boolean);
   const weeklySchedule = draft.schedule.mode === "recurring" && draft.schedule.unit === "weeks" && draft.schedule.every === 1;
   const rcloneRemoteName = initialProfile?.repository.rcloneRemoteName ?? defaultRcloneRemoteName(draft.name, rcloneBackend);
@@ -2638,6 +2778,18 @@ function BackupWizard({
     }
   }
 
+  async function handleLoadExistingBackup() {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const loaded = await onLoadExisting();
+      if (!loaded) setSaving(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Unable to load this backup.");
+      setSaving(false);
+    }
+  }
+
   return (
     <section className="rounded-md border border-ink/10 bg-white p-5 shadow-sm">
       {restoringImportedBackup ? (
@@ -2649,7 +2801,28 @@ function BackupWizard({
       ) : null}
       <Stepper steps={steps} current={step} canSelect={(index) => index <= highestSelectableStep} onSelect={goToStep} />
 
-      {step === 0 ? (
+      {creationChoiceRequired && step === 0 ? (
+        <div className="wizard-grid">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              className="secondary-button justify-center"
+              disabled={saving}
+              onClick={() => {
+                setCreationStarted(true);
+                setStep(detailsStep);
+              }}
+            >
+              <FontAwesomeIcon icon={faBoxArchive} /> Create New Backup
+            </button>
+            <button className="secondary-button justify-center" disabled={saving} onClick={handleLoadExistingBackup}>
+              <FontAwesomeIcon className={saving ? "animate-spin" : ""} icon={saving ? faRotateRight : faArrowUp} /> Load Existing Backup
+            </button>
+          </div>
+          <p className="setup-status">Create a new backup setup, or load a Rest Stop backup JSON or local restic repository config to review and save it.</p>
+        </div>
+      ) : null}
+
+      {step === detailsStep ? (
         <div className="wizard-grid">
           <Field label="Backup name">
             <input className="text-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Family photos" />
@@ -2760,7 +2933,7 @@ function BackupWizard({
         </div>
       ) : null}
 
-      {step === 1 ? (
+      {step === locationStep ? (
         <div className="wizard-grid">
           <Field label="Backup location">
             <select className="text-input" value={locationOption} onChange={(event) => selectLocation(event.target.value as LocationOption)}>
@@ -2873,7 +3046,7 @@ function BackupWizard({
         </div>
       ) : null}
 
-      {step === 2 ? (
+      {step === dataStep ? (
         <div className="wizard-grid">
           <FileBrowser selected={draft.sources} onChange={(sources) => setDraft({ ...draft, sources })} />
           <SelectedPaths paths={draft.sources} onRemove={(path) => setDraft({ ...draft, sources: draft.sources.filter((item) => item !== path) })} />
@@ -2881,7 +3054,7 @@ function BackupWizard({
         </div>
       ) : null}
 
-      {step === 3 ? (
+      {step === frequencyStep ? (
         <div className="wizard-grid">
           <Field label="Frequency">
             <select className="text-input" value={selectedSchedulePreset} onChange={(event) => updateSchedulePreset(event.target.value as SchedulePreset)}>
@@ -2936,7 +3109,7 @@ function BackupWizard({
         </div>
       ) : null}
 
-      {step === 4 ? (
+      {step === retentionStep ? (
         <div className="wizard-grid">
           <Field label="Retention">
             <select
@@ -2997,7 +3170,7 @@ function BackupWizard({
         </div>
       ) : null}
 
-      {step === 5 ? <BackupReview draft={draft} /> : null}
+      {step === reviewStep ? <BackupReview draft={draft} /> : null}
       {saveError ? <p className="setup-status error mt-4">{saveError}</p> : null}
 
       <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
@@ -3011,9 +3184,11 @@ function BackupWizard({
             </button>
           ) : null}
           {step < steps.length - 1 ? (
+            creationChoiceRequired && step === 0 ? null : (
             <button className="secondary-button justify-center" disabled={!canContinue || saving} onClick={() => setStep(step + 1)}>
               Continue <FontAwesomeIcon icon={faArrowRight} />
             </button>
+            )
           ) : (
             <button className="primary-button justify-center" disabled={!canSave || saving} onClick={handleSaveDraft}>
               <FontAwesomeIcon icon={faCheck} /> {saving ? "Saving..." : editingBackup ? "Save changes" : "Save backup"}
@@ -3335,10 +3510,10 @@ function RestoreFlow({
     : step === 1
       ? Boolean(snapshotId)
       : step === 2
-      ? paths.length > 0
-      : step === 3
-        ? restoreTarget.length > 0
-        : true;
+        ? paths.length > 0
+        : step === 3
+          ? restoreTarget.length > 0
+          : true;
 
   useEffect(() => {
     setPaths([]);
