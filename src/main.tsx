@@ -1503,17 +1503,6 @@ function NotificationsView({
   error: string;
   onRefresh: () => void;
 }) {
-  const [expandedNotificationIds, setExpandedNotificationIds] = useState<Set<string>>(() => new Set());
-
-  function toggleNotification(notificationId: string) {
-    setExpandedNotificationIds((current) => {
-      const next = new Set(current);
-      if (next.has(notificationId)) next.delete(notificationId);
-      else next.add(notificationId);
-      return next;
-    });
-  }
-
   return (
     <section className="notifications-view rounded-md border border-ink/10 bg-white p-5 shadow-sm">
       <div className="notifications-view-header">
@@ -1538,23 +1527,29 @@ function NotificationsView({
         <ul className="notification-log-list">
           {notifications.map((notification) => {
             const hasBody = Boolean(notification.body?.trim());
-            const expanded = expandedNotificationIds.has(notification.id);
 
             return (
               <li key={notification.id}>
-                <button
-                  aria-expanded={hasBody ? expanded : undefined}
-                  className={`notification-log-summary ${hasBody ? "" : "static"}`}
-                  onClick={() => hasBody && toggleNotification(notification.id)}
-                  type="button"
-                >
-                  <FontAwesomeIcon className="notification-expand-icon" icon={hasBody ? expanded ? faChevronDown : faChevronRight : faBell} />
-                  <span className="notification-log-summary-copy">
-                    <span className="notification-log-title">{notification.title}</span>
-                  </span>
-                  <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
-                </button>
-                {hasBody && expanded ? <div className="notification-log-body" tabIndex={0}>{notification.body}</div> : null}
+                {hasBody ? (
+                  <details className="notification-log-item">
+                    <summary className="notification-log-summary">
+                      <FontAwesomeIcon className="notification-expand-icon" icon={faChevronRight} />
+                      <span className="notification-log-summary-copy">
+                        <span className="notification-log-title">{notification.title}</span>
+                      </span>
+                      <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
+                    </summary>
+                    <div className="notification-log-body" tabIndex={0}>{notification.body}</div>
+                  </details>
+                ) : (
+                  <div className="notification-log-summary static">
+                    <FontAwesomeIcon className="notification-expand-icon" icon={faBell} />
+                    <span className="notification-log-summary-copy">
+                      <span className="notification-log-title">{notification.title}</span>
+                    </span>
+                    <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
+                  </div>
+                )}
               </li>
             );
           })}

@@ -157,13 +157,27 @@ button:disabled {
   padding: 0.55rem;
 }
 
+.notification-log-item {
+  min-width: 0;
+}
+
 .notification-log-summary {
   display: grid;
   grid-template-columns: 1rem minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
+  cursor: pointer;
+  list-style: none;
   text-align: left;
+}
+
+.notification-log-summary::-webkit-details-marker {
+  display: none;
+}
+
+.notification-log-item[open] .notification-expand-icon {
+  transform: rotate(90deg);
 }
 
 .notification-log-summary:hover .notification-log-title {
@@ -181,6 +195,7 @@ button:disabled {
 .notification-expand-icon {
   color: #245247;
   font-size: 0.72rem;
+  transition: transform 120ms ease;
 }
 
 .notification-log-summary-copy {
