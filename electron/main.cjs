@@ -8,6 +8,15 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 const log = require("electron-log");
 const { autoUpdater } = require("electron-updater");
+const {
+  rcloneResticArgs,
+  sanitizeRcloneOutput,
+  isMissingRcloneRemoteError,
+  isNetworkError,
+  isRetryableRcloneError,
+  isRcloneAuthorizationFailure,
+  isTransientAuthError
+} = require("./rclonePolicy.cjs");
 
 const APP_NAME = "Rest Stop";
 
@@ -58,190 +67,6 @@ const AUTH_RETRY_DELAY_MS = 5 * 1000;
 const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
 const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
 const NOTIFICATION_LOG_FILE = "notifications.json";
-const BASE_RCLONE_RESTIC_ARGS = [
-  "serve restic",
-  "--stdio",
-  "--fast-list",
-  "--b2-hard-delete",
-  "--checkers 4",
-  "--transfers 4",
-  "--low-level-retries 10",
-  "--retries 5",
-  "--retries-sleep 10s",
-  "--timeout 5m",
-  "--contimeout 30s",
-  "--buffer-size 32M",
-  "--expect-continue-timeout 5s"
-];
-const RCLONE_BACKEND_EXTRAS_HIGH_PERF = {
-  drive: [
-    "--drive-use-trash=false",
-    "--max-connections 12",
-    "--tpslimit 10",
-    "--tpslimit-burst 12",
-    "--drive-pacer-min-sleep 200ms",
-    "--drive-pacer-burst 16",
-    "--drive-chunk-size 64M",
-    "--drive-stop-on-upload-limit",
-    "--drive-acknowledge-abuse",
-    "--transfers 8"
-  ],
-  onedrive: [
-    "--checkers 3",
-    "--transfers 3",
-    "--max-connections 6",
-    "--tpslimit 6",
-    "--tpslimit-burst 10",
-    "--onedrive-chunk-size 10M"
-  ],
-  dropbox: [
-    "--checkers 8",
-    "--transfers 8",
-    "--max-connections 12",
-    "--tpslimit 8",
-    "--tpslimit-burst 12",
-    "--dropbox-batch-mode sync",
-    "--dropbox-batch-size 8",
-    "--dropbox-batch-timeout 1s"
-  ],
-  box: [
-    "--checkers 4",
-    "--transfers 4",
-    "--max-connections 8",
-    "--tpslimit 6",
-    "--tpslimit-burst 8",
-    "--box-upload-cutoff 50M",
-    "--box-commit-retries 100"
-  ],
-  pcloud: [
-    "--checkers 4",
-    "--transfers 4",
-    "--max-connections 6",
-    "--tpslimit 6",
-    "--tpslimit-burst 8"
-  ],
-  yandex: [
-    "--checkers 4",
-    "--transfers 4",
-    "--max-connections 6",
-    "--tpslimit 6",
-    "--tpslimit-burst 8",
-    "--yandex-hard-delete"
-  ],
-  mega: [
-    "--checkers 2",
-    "--transfers 2",
-    "--max-connections 4",
-    "--tpslimit 4",
-    "--tpslimit-burst 4",
-    "--mega-use-https",
-    "--mega-hard-delete"
-  ],
-  b2: [
-    "--checkers 4",
-    "--transfers 4",
-    "--max-connections 8",
-    "--b2-hard-delete",
-    "--b2-upload-concurrency 4",
-    "--b2-chunk-size 96M"
-  ],
-  s3: [
-    "--checkers 4",
-    "--transfers 4",
-    "--max-connections 8",
-    "--s3-upload-concurrency 4",
-    "--s3-chunk-size 16M"
-  ],
-  smb: [
-    "--checkers 2",
-    "--transfers 2",
-    "--max-connections 4",
-    "--smb-idle-timeout 5m"
-  ]
-};
-const RCLONE_BACKEND_EXTRAS_STANDARD = {
-  drive: [
-    "--drive-use-trash=false",
-    "--max-connections 8",
-    "--tpslimit 8",
-    "--tpslimit-burst 12",
-    "--drive-pacer-min-sleep 200ms",
-    "--drive-pacer-burst 16",
-    "--drive-chunk-size 16M",
-    "--drive-stop-on-upload-limit"
-  ],
-  onedrive: [
-    "--checkers 3",
-    "--transfers 3",
-    "--max-connections 6",
-    "--tpslimit 6",
-    "--tpslimit-burst 10"
-  ],
-  dropbox: [
-    "--checkers 4",
-    "--transfers 4",
-    "--max-connections 8",
-    "--tpslimit 6",
-    "--tpslimit-burst 8",
-    "--dropbox-batch-mode sync",
-    "--dropbox-batch-size 4",
-    "--dropbox-batch-timeout 1s"
-  ],
-  box: [
-    "--checkers 3",
-    "--transfers 3",
-    "--max-connections 6",
-    "--tpslimit 4",
-    "--tpslimit-burst 6",
-    "--box-upload-cutoff 50M",
-    "--box-commit-retries 100"
-  ],
-  pcloud: [
-    "--checkers 3",
-    "--transfers 3",
-    "--max-connections 4",
-    "--tpslimit 4",
-    "--tpslimit-burst 6"
-  ],
-  yandex: [
-    "--checkers 3",
-    "--transfers 3",
-    "--max-connections 4",
-    "--tpslimit 4",
-    "--tpslimit-burst 6",
-    "--yandex-hard-delete"
-  ],
-  mega: [
-    "--checkers 2",
-    "--transfers 2",
-    "--max-connections 4",
-    "--tpslimit 4",
-    "--tpslimit-burst 4",
-    "--mega-use-https",
-    "--mega-hard-delete"
-  ],
-  b2: [
-    "--checkers 3",
-    "--transfers 3",
-    "--max-connections 6",
-    "--b2-hard-delete",
-    "--b2-upload-concurrency 2",
-    "--b2-chunk-size 96M"
-  ],
-  s3: [
-    "--checkers 3",
-    "--transfers 3",
-    "--max-connections 6",
-    "--s3-upload-concurrency 2",
-    "--s3-chunk-size 16M"
-  ],
-  smb: [
-    "--checkers 2",
-    "--transfers 2",
-    "--max-connections 4",
-    "--smb-idle-timeout 5m"
-  ]
-};
 const rcloneDirectoryCache = new Map();
 const restoreSnapshotCache = new Map();
 const restoreFileTreeCache = new Map();
@@ -1314,17 +1139,6 @@ function friendlyRcloneAuthorizeError(error, backendLabel) {
   return new Error(output || `${backendLabel} authorization did not complete. Try connecting again.`);
 }
 
-function sanitizeRcloneOutput(output) {
-  return String(output ?? "")
-    .replace(/https?:\/\/\S+/gi, "[authorization link hidden]")
-    .replace(/\S*(code|state|session_crd|access_token|refresh_token|id_token|client_secret)=\S*/gi, "$1=[hidden]")
-    .trim();
-}
-
-function isMissingRcloneRemoteError(error) {
-  return /didn'?t find section in config file|not found in config|couldn'?t find remote|remote .* not found/i.test(errorOutput(error));
-}
-
 function rcloneRemoteTarget(remoteName, directoryPath) {
   return `${remoteName}:${directoryPath}`;
 }
@@ -1782,12 +1596,13 @@ function shouldShowFailureNotification(key) {
 function showFailureNotificationOnce(key, title, body) {
   try {
     if (typeof Notification.isSupported !== "function" || !Notification.isSupported() || !shouldShowFailureNotification(key)) return;
-    const notificationBody = String(body ?? "").slice(0, 180);
+    const fullBody = String(body ?? "");
+    const notificationBody = fullBody.slice(0, 180);
     new Notification({
       title,
       body: notificationBody
     }).show();
-    appendNotificationLog({ key, title, body: notificationBody });
+    appendNotificationLog({ key, title, body: fullBody });
   } catch (error) {
     log.warn("Failure notification could not be shown", error);
   }
@@ -1834,13 +1649,6 @@ async function retryOnTransientAuth(fn, profile) {
 
 function rcloneBackendLabel(backend) {
   return rcloneBackends[String(backend ?? "")]?.label ?? "Rclone";
-}
-
-function isRcloneAuthorizationFailure(output) {
-  const text = String(output ?? "");
-  if (/access_denied|denied access|invalid_grant|invalid_client|unauthorized_client|refresh token|failed to configure token/i.test(text)) return true;
-  const hasAuthContext = /authorization|authorize|oauth|accounts\.google\.com|localhost:\d+\/auth|session_crd=/i.test(text);
-  return hasAuthContext && /context canceled|cancelled|canceled|failed to authorize/i.test(text);
 }
 
 function notifyRestoreFailure(options, error) {
@@ -2324,28 +2132,12 @@ function resticRepositoryArgs(repositoryOrTarget) {
   const repositoryTarget = String(target ?? "").trim();
   const args = [];
   if (repositoryTarget.startsWith("rclone:")) {
-    args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget)}`);
+    args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget, getHighPerformanceEnabled())}`);
     args.push("-o", "rclone.timeout=30m");
   }
   return [...args, "-r", repositoryTarget];
 }
 
-function rcloneResticArgs(repositoryOrTarget) {
-  const backend = typeof repositoryOrTarget === "object" ? repositoryOrTarget?.rcloneBackend : null;
-  const highPerf = getHighPerformanceEnabled();
-  const backendExtras = highPerf ? RCLONE_BACKEND_EXTRAS_HIGH_PERF : RCLONE_BACKEND_EXTRAS_STANDARD;
-  const extras = (backend && backendExtras[backend]) || [];
-  const combined = [...BASE_RCLONE_RESTIC_ARGS, ...extras];
-  const seen = new Map();
-  for (let i = 0; i < combined.length; i++) {
-    const flag = combined[i].match(/^--[^\s=]+/)?.[0];
-    if (flag) seen.set(flag, i);
-  }
-  return combined.filter((entry, i) => {
-    const flag = entry.match(/^--[^\s=]+/)?.[0];
-    return !flag || seen.get(flag) === i;
-  }).join(" ");
-}
 
 function deleteLocalRepository(target) {
   const resolved = path.resolve(String(target ?? ""));
@@ -2949,9 +2741,8 @@ function shouldRetryBackupForNetwork(profile, error) {
     const target = String(profile.repository.target ?? "");
     if (isNetworkPath(target) && isNetworkError(error)) return true;
   }
-  if (profile?.repository?.type === "rclone" || profile?.repository?.type === "sftp" || profile?.repository?.type === "rest") {
-    return isNetworkError(error);
-  }
+  if (profile?.repository?.type === "rclone") return isRetryableRcloneError(error);
+  if (profile?.repository?.type === "sftp" || profile?.repository?.type === "rest") return isNetworkError(error);
   return false;
 }
 
@@ -2974,14 +2765,6 @@ function isNetworkPath(target) {
   }
 }
 
-function isNetworkError(error) {
-  return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|temporary failure|temporary error|transport|tls handshake|broken pipe|rate.?limit|too many requests|try again later|backend error|rclone:\s*5|HTTP 429|HTTP 500|HTTP 502|HTTP 503|HTTP 504|userRateLimitExceeded|dailyLimitExceeded|storageQuotaExceeded|uploadRateLimitExceeded|quota/i.test(errorOutput(error));
-}
-
-function isTransientAuthError(error) {
-  const output = errorOutput(error);
-  return /invalid_grant/i.test(output) && !/revoked|consent_required|account_not_found/i.test(output);
-}
 
 function markBackupPending(profileId, startedAt = new Date().toISOString()) {
   const profiles = listProfiles();

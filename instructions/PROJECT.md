@@ -8,3 +8,4 @@
 – Some of the backups include Google Drive, OneDrive, Mega, S3, and others.
 – It initializes on start and lives in the system tray to operate in the background.
 – It is meant to be lightweight and reliable.
+– When implementing a backend check to see if all of the necessary flags are implemented to ensure stability and speed, especially those using rclone, so as to avoid throttling and connection failure.

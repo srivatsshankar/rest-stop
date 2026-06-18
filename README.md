@@ -21,7 +21,7 @@ Rest Stop is a lightweight desktop app for creating, managing, and restoring res
 
 - Create restic backup profiles with clear step-by-step setup.
 - Restore from saved profiles or manual backup locations.
-- Choose local folders, SMB paths, SFTP, REST, and Rclone-backed repositories.
+- Choose local folders, SMB network folders, SFTP, REST, and Rclone-backed repositories.
 - Store and reuse backup passwords through Electron secure storage.
 - Run backups on demand or by saved recurring schedules.
 - Keep scheduled backups running from the system tray after the window is closed.
@@ -30,6 +30,27 @@ Rest Stop is a lightweight desktop app for creating, managing, and restoring res
 - Surface backup and restore failures with persistent error details.
 - Exclude common extensions and expressions
 
+
+## Backend Options
+
+Rest Stop can create and restore restic repositories in these locations:
+
+| Backend | Setup |
+| --- | --- |
+| Local folder | Direct folder picker for a local disk, external drive, or mounted path. |
+| SMB network folder | Direct network folder path. |
+| REST server | Restic REST repository URL. |
+| SFTP server | Restic SFTP repository URL. |
+| Google Drive | Rclone OAuth connection. |
+| OneDrive | Rclone OAuth connection. |
+| Dropbox | Rclone OAuth connection. |
+| Box | Rclone OAuth connection. |
+| pCloud | Rclone OAuth connection. |
+| Yandex Disk | Rclone OAuth connection. |
+| MEGA | Rclone credentials. |
+| Backblaze B2 | Rclone application key credentials. |
+| S3 | Rclone S3-compatible credentials. |
+| SMB / CIFS | Rclone SMB/CIFS credentials. |
 
 ## Downloads
 
@@ -136,3 +157,7 @@ release-github.bat
 ```
 
 The publish script overwrites the `vX.Y.Z` tag and removes an existing GitHub release if needed. GitHub Actions then builds the Windows `.exe` and `.msi` files, creates the release as a draft with the markdown file as the release body, attaches the installers, and publishes the release only after the files are attached.
+
+## Credits
+
+Third-party library and tool notices are listed in [Credits.md](Credits.md).
