@@ -1,55 +1,22 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  rcloneResticArgs,
   isRetryableRcloneError,
   isRcloneAuthorizationFailure,
   isTransientAuthError
 } = require("../electron/rclonePolicy.cjs");
 
-function driveArgs(highPerformance = true) {
-  return rcloneResticArgs({ rcloneBackend: "drive" }, highPerformance);
-}
-
-test("Google Drive rclone args avoid hard upload-limit failures", () => {
-  assert.equal(driveArgs(true).includes("--drive-stop-on-upload-limit"), false);
-  assert.equal(driveArgs(false).includes("--drive-stop-on-upload-limit"), false);
-});
-
-test("Google Drive high-performance args stay bounded for reliability", () => {
-  const args = driveArgs(true);
-
-  assert.match(args, /--checkers 2/);
-  assert.match(args, /--transfers 2/);
-  assert.match(args, /--max-connections 4/);
-  assert.match(args, /--tpslimit 4/);
-  assert.match(args, /--tpslimit-burst 4/);
-  assert.match(args, /--drive-chunk-size 128M/);
-});
-
-test("Google Drive standard args are conservative", () => {
-  const args = driveArgs(false);
-
-  assert.match(args, /--checkers 1/);
-  assert.match(args, /--transfers 1/);
-  assert.match(args, /--max-connections 2/);
-  assert.match(args, /--tpslimit 2/);
-  assert.match(args, /--tpslimit-burst 2/);
-  assert.match(args, /--drive-chunk-size 64M/);
-});
-
-test("Drive throttling and transport failures are retryable", () => {
+test("rclone throttling and transport failures are retryable", () => {
   const retryableMessages = [
-    "Google Drive upload limit reached",
     "HTTP 429 too many requests",
     "HTTP 500 backend error",
     "HTTP 503 backend error",
     "context deadline exceeded",
     "connection reset by peer",
     "broken pipe",
-    "userRateLimitExceeded",
-    "storageQuotaExceeded",
-    "uploadRateLimitExceeded"
+    "rate limit exceeded",
+    "quota exceeded",
+    "upload limit reached"
   ];
 
   for (const message of retryableMessages) {

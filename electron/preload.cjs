@@ -28,8 +28,6 @@ contextBridge.exposeInMainWorld("reststop", {
   startRestore: (options) => ipcRenderer.invoke("restore:start", options),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   saveBackupDefaults: (settings) => ipcRenderer.invoke("settings:save-backup-defaults", settings),
-  getHighPerformanceEnabled: () => ipcRenderer.invoke("settings:get-high-performance"),
-  setHighPerformanceEnabled: (enabled) => ipcRenderer.invoke("settings:set-high-performance", enabled),
   getAutoUpdatesEnabled: () => ipcRenderer.invoke("updates:get-auto-enabled"),
   setAutoUpdatesEnabled: (enabled) => ipcRenderer.invoke("updates:set-auto-enabled", enabled),
   getUpdateStatus: () => ipcRenderer.invoke("updates:get-status"),

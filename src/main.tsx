@@ -228,7 +228,6 @@ type UpdateStatus = {
 
 type AppSettings = {
   autoUpdatesEnabled?: boolean;
-  highPerformance?: boolean;
   defaultExcludes: string[];
 };
 
@@ -260,8 +259,6 @@ type ReststopBridge = {
   startRestore: (options: RestoreStartOptions) => Promise<{ message: string }>;
   getSettings: () => Promise<AppSettings>;
   saveBackupDefaults: (settings: Pick<AppSettings, "defaultExcludes">) => Promise<AppSettings>;
-  getHighPerformanceEnabled: () => Promise<boolean>;
-  setHighPerformanceEnabled: (enabled: boolean) => Promise<boolean>;
   getAutoUpdatesEnabled: () => Promise<boolean>;
   setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
   getUpdateStatus: () => Promise<UpdateStatus>;
@@ -364,8 +361,6 @@ const fallbackBridge: ReststopBridge = {
   },
   getSettings: async () => ({ defaultExcludes: defaultExcludePatterns }),
   saveBackupDefaults: async (settings) => ({ defaultExcludes: normalizeExcludePatterns(settings.defaultExcludes) }),
-  getHighPerformanceEnabled: async () => true,
-  setHighPerformanceEnabled: async (enabled) => enabled,
   getAutoUpdatesEnabled: async () => true,
   setAutoUpdatesEnabled: async (enabled) => enabled,
   getUpdateStatus: async () => ({
@@ -671,7 +666,6 @@ function App() {
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
   const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [highPerformanceEnabled, setHighPerformanceEnabledState] = useState(true);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
     enabled: true,
     status: "checking",
@@ -703,12 +697,10 @@ function App() {
     bridge.getSettings()
       .then((settings) => {
         setAutoUpdatesEnabledState(settings.autoUpdatesEnabled !== false);
-        setHighPerformanceEnabledState(settings.highPerformance !== false);
         setDefaultExcludes(excludePatternsToText(settings.defaultExcludes));
       })
       .catch(() => {
         setAutoUpdatesEnabledState(true);
-        setHighPerformanceEnabledState(true);
         setDefaultExcludes(defaultExcludeText);
       });
   }, []);
@@ -878,14 +870,6 @@ function App() {
     }
   }
 
-  async function handleHighPerformanceChange(enabled: boolean) {
-    setHighPerformanceEnabledState(enabled);
-    try {
-      setHighPerformanceEnabledState(await bridge.setHighPerformanceEnabled(enabled));
-    } catch {
-      setHighPerformanceEnabledState((current) => !current);
-    }
-  }
 
   async function handleDefaultExcludesChange(value: string) {
     setDefaultExcludes(value);
@@ -1347,7 +1331,6 @@ function App() {
                 themeMode={themeMode}
                 autoUpdatesEnabled={autoUpdatesEnabled}
                 updateChecking={updateChecking}
-                highPerformanceEnabled={highPerformanceEnabled}
                 updateStatus={updateStatus}
                 defaultExcludes={defaultExcludes}
                 configMessage={configMessage}
@@ -1356,7 +1339,6 @@ function App() {
                 onThemeChange={setThemeMode}
                 onAutoUpdatesChange={handleAutoUpdatesChange}
                 onCheckUpdates={runUpdateCheck}
-                onHighPerformanceChange={handleHighPerformanceChange}
                 onDefaultExcludesChange={handleDefaultExcludesChange}
                 onExportConfig={handleExportConfig}
                 onRestoreConfig={handleRestoreConfig}
@@ -1654,7 +1636,6 @@ function SettingsView({
   themeMode,
   autoUpdatesEnabled,
   updateChecking,
-  highPerformanceEnabled,
   updateStatus,
   defaultExcludes,
   configMessage,
@@ -1663,7 +1644,6 @@ function SettingsView({
   onThemeChange,
   onAutoUpdatesChange,
   onCheckUpdates,
-  onHighPerformanceChange,
   onDefaultExcludesChange,
   onExportConfig,
   onRestoreConfig
@@ -1675,7 +1655,6 @@ function SettingsView({
   themeMode: ThemeMode;
   autoUpdatesEnabled: boolean;
   updateChecking: boolean;
-  highPerformanceEnabled: boolean;
   updateStatus: UpdateStatus;
   defaultExcludes: string;
   configMessage: string;
@@ -1684,7 +1663,6 @@ function SettingsView({
   onThemeChange: (mode: ThemeMode) => void;
   onAutoUpdatesChange: (enabled: boolean) => void;
   onCheckUpdates: () => void;
-  onHighPerformanceChange: (enabled: boolean) => void;
   onDefaultExcludesChange: (value: string) => void;
   onExportConfig: () => void;
   onRestoreConfig: () => void;
@@ -1717,22 +1695,6 @@ function SettingsView({
           </div>
         </div>
         <UpdateStatusBox status={updateStatus} />
-      </section>
-
-      <section className="settings-section performance-section">
-        <p className="settings-label">Performance</p>
-        <label className="settings-toggle">
-          <div className="settings-toggle-copy">
-            <span>High Performance</span>
-            <p>Uses larger transfer sizes and more concurrent uploads for cloud backends. Turn off if you have limited bandwidth or RAM.</p>
-          </div>
-          <input
-            checked={highPerformanceEnabled}
-            onChange={(event) => onHighPerformanceChange(event.target.checked)}
-            type="checkbox"
-          />
-          <span aria-hidden="true" className="settings-toggle-control" />
-        </label>
       </section>
 
       <section className="settings-section appearance-section">

@@ -9,8 +9,6 @@ const zlib = require("node:zlib");
 const log = require("electron-log");
 const { autoUpdater } = require("electron-updater");
 const {
-  rcloneResticArgs,
-  rcloneConnectionLimit,
   sanitizeRcloneOutput,
   isMissingRcloneRemoteError,
   isNetworkError,
@@ -119,10 +117,9 @@ const OLD_DEFAULT_EXCLUDE_MARKERS = [
 const rcloneBackends = {
   drive: {
     label: "Google Drive",
-    auth: "oauth",
-    config: ["scope", "drive"]
+    auth: "oauth"
   },
-  onedrive: { label: "OneDrive", auth: "oauth", config: ["drive_type", "personal"] },
+  onedrive: { label: "OneDrive", auth: "oauth" },
   dropbox: { label: "Dropbox", auth: "oauth", config: [] },
   box: { label: "Box", auth: "oauth", config: [] },
   pcloud: { label: "pCloud", auth: "oauth", config: [] },
@@ -517,8 +514,6 @@ function registerIpc() {
   ipcMain.handle("restore:start", (_event, options) => startRestore(options));
   ipcMain.handle("settings:get", () => readSettings());
   ipcMain.handle("settings:save-backup-defaults", (_event, settings) => saveBackupDefaults(settings));
-  ipcMain.handle("settings:get-high-performance", () => getHighPerformanceEnabled());
-  ipcMain.handle("settings:set-high-performance", (_event, enabled) => setHighPerformanceEnabled(enabled));
   ipcMain.handle("updates:get-auto-enabled", () => getAutoUpdatesEnabled());
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
   ipcMain.handle("updates:get-status", getUpdateStatus);
@@ -1479,12 +1474,12 @@ function rcloneProcessOptions(options = {}) {
 }
 
 function normalizeSettings(settings) {
-  const defaultExcludes = normalizeDefaultExcludePatterns(settings.defaultExcludes);
-  return {
+  const normalized = {
     ...settings,
-    defaultExcludes,
-    highPerformance: settings.highPerformance !== false
+    defaultExcludes: normalizeDefaultExcludePatterns(settings.defaultExcludes)
   };
+  delete normalized.highPerformance;
+  return normalized;
 }
 
 function normalizeDefaultExcludePatterns(value) {
@@ -1716,18 +1711,6 @@ function saveBackupDefaults(settings) {
   return readSettings();
 }
 
-function getHighPerformanceEnabled() {
-  return readSettings().highPerformance !== false;
-}
-
-function setHighPerformanceEnabled(enabled) {
-  const highPerformance = Boolean(enabled);
-  writeSettings({
-    ...readSettings(),
-    highPerformance
-  });
-  return highPerformance;
-}
 
 function getAutoUpdatesEnabled() {
   return readSettings().autoUpdatesEnabled !== false;
@@ -2131,14 +2114,7 @@ function rcloneTargetFromResticTarget(target) {
 function resticRepositoryArgs(repositoryOrTarget) {
   const target = typeof repositoryOrTarget === "string" ? repositoryOrTarget : repositoryOrTarget?.target;
   const repositoryTarget = String(target ?? "").trim();
-  const args = [];
-  if (repositoryTarget.startsWith("rclone:")) {
-    const highPerf = getHighPerformanceEnabled();
-    args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget, highPerf)}`);
-    args.push("-o", `rclone.connections=${rcloneConnectionLimit(repositoryOrTarget, highPerf)}`);
-    args.push("-o", "rclone.timeout=30m");
-  }
-  return [...args, "-r", repositoryTarget];
+  return ["-r", repositoryTarget];
 }
 
 
@@ -2521,7 +2497,6 @@ async function startBackup(profile, password) {
     runState.child = null;
     const excludeArgs = normalizeExcludePatterns(profile.excludes).flatMap((pattern) => ["--exclude", pattern]);
     const resticBackupFlags = ["--retry-lock", "5m"];
-    if (profile.repository.type === "rclone") resticBackupFlags.push("--pack-size", getHighPerformanceEnabled() ? "64" : "32");
     const args = ["--json", ...resticRepositoryArgs(profile.repository), "backup", ...resticBackupFlags, ...excludeArgs, ...profile.sources];
     child = childProcess.spawn(restic.path, args, { env, windowsHide: true });
     runState.pid = child.pid ?? null;
