@@ -24,7 +24,7 @@ const RCLONE_BACKEND_EXTRAS_HIGH_PERF = {
     "--tpslimit-burst 4",
     "--drive-pacer-min-sleep 400ms",
     "--drive-pacer-burst 4",
-    "--drive-chunk-size 16M",
+    "--drive-chunk-size 128M",
     "--drive-acknowledge-abuse"
   ],
   onedrive: [
@@ -109,9 +109,10 @@ const RCLONE_BACKEND_EXTRAS_STANDARD = {
     "--max-connections 2",
     "--tpslimit 2",
     "--tpslimit-burst 2",
-    "--drive-pacer-min-sleep 500ms",
+    "--drive-pacer-min-sleep 200ms",
     "--drive-pacer-burst 2",
-    "--drive-chunk-size 8M"
+    "--drive-chunk-size 64M",
+    "--drive-acknowledge-abuse"
   ],
   onedrive: [
     "--checkers 3",
@@ -202,6 +203,17 @@ function rcloneResticArgs(repositoryOrTarget, highPerformance = true) {
   }).join(" ");
 }
 
+function rcloneConnectionLimit(repositoryOrTarget, highPerformance = true) {
+  const backend = typeof repositoryOrTarget === "object" ? repositoryOrTarget?.rcloneBackend : null;
+  const backendExtras = highPerformance ? RCLONE_BACKEND_EXTRAS_HIGH_PERF : RCLONE_BACKEND_EXTRAS_STANDARD;
+  const extras = (backend && backendExtras[backend]) || [];
+  for (const entry of extras) {
+    const match = entry.match(/^--max-connections\s+(\d+)/);
+    if (match) return Number(match[1]);
+  }
+  return 5;
+}
+
 function sanitizeRcloneOutput(output) {
   return String(output ?? "")
     .replace(/https?:\/\/\S+/gi, "[authorization link hidden]")
@@ -245,6 +257,7 @@ function errorOutput(error) {
 
 module.exports = {
   rcloneResticArgs,
+  rcloneConnectionLimit,
   sanitizeRcloneOutput,
   isMissingRcloneRemoteError,
   isNetworkError,

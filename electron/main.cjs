@@ -10,6 +10,7 @@ const log = require("electron-log");
 const { autoUpdater } = require("electron-updater");
 const {
   rcloneResticArgs,
+  rcloneConnectionLimit,
   sanitizeRcloneOutput,
   isMissingRcloneRemoteError,
   isNetworkError,
@@ -2132,7 +2133,9 @@ function resticRepositoryArgs(repositoryOrTarget) {
   const repositoryTarget = String(target ?? "").trim();
   const args = [];
   if (repositoryTarget.startsWith("rclone:")) {
-    args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget, getHighPerformanceEnabled())}`);
+    const highPerf = getHighPerformanceEnabled();
+    args.push("-o", `rclone.args=${rcloneResticArgs(repositoryOrTarget, highPerf)}`);
+    args.push("-o", `rclone.connections=${rcloneConnectionLimit(repositoryOrTarget, highPerf)}`);
     args.push("-o", "rclone.timeout=30m");
   }
   return [...args, "-r", repositoryTarget];
