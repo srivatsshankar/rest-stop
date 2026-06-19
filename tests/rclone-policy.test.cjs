@@ -24,7 +24,7 @@ test("Google Drive high-performance args stay bounded for reliability", () => {
   assert.match(args, /--max-connections 4/);
   assert.match(args, /--tpslimit 4/);
   assert.match(args, /--tpslimit-burst 4/);
-  assert.match(args, /--drive-chunk-size 16M/);
+  assert.match(args, /--drive-chunk-size 128M/);
 });
 
 test("Google Drive standard args are conservative", () => {
@@ -35,7 +35,7 @@ test("Google Drive standard args are conservative", () => {
   assert.match(args, /--max-connections 2/);
   assert.match(args, /--tpslimit 2/);
   assert.match(args, /--tpslimit-burst 2/);
-  assert.match(args, /--drive-chunk-size 8M/);
+  assert.match(args, /--drive-chunk-size 64M/);
 });
 
 test("Drive throttling and transport failures are retryable", () => {
