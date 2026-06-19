@@ -893,10 +893,11 @@ async function setupRcloneRepository(options) {
     rcloneRemoteName: remoteName,
     rclonePath: repositoryPath
   };
+  const env = await resticEnvironmentForRepository(repository, password);
   await ensureResticRepository(
     restic.path,
     repository,
-    envWithRcloneConfigPassword(envWithToolDirectory({ ...process.env, RESTIC_PASSWORD: password }, rclone.path))
+    env
   );
 
   return {
@@ -2273,6 +2274,12 @@ async function resticEnvironmentForRepository(repository, password) {
     const rclone = await findRclone();
     if (!rclone?.path) throw new Error("Rclone is not installed.");
     env = envWithRcloneConfigPassword(envWithToolDirectory(env, rclone.path));
+
+    if (repository.rcloneBackend === "drive") {
+      env.RCLONE_TPSLIMIT = "10";
+      env.RCLONE_DRIVE_CHUNK_SIZE = "128M";
+      env.RCLONE_DRIVE_USE_TRASH = "false";
+    }
   }
   return env;
 }
@@ -2460,7 +2467,7 @@ async function startBackup(profile, password) {
   activeBackupRuns.set(profileId, runState);
 
   let restic;
-  let env = { ...process.env, RESTIC_PASSWORD: resolvedPassword };
+  let env;
   let child;
   const trackResticChild = (nextChild) => {
     runState.child = nextChild;
@@ -2472,10 +2479,7 @@ async function startBackup(profile, password) {
     restic = await findRestic();
     if (!restic?.path) throw new Error("Restic is not installed.");
 
-    if (profile.repository.type === "rclone") {
-      const rclone = await findRclone();
-      if (rclone?.path) env = envWithRcloneConfigPassword(envWithToolDirectory(env, rclone.path));
-    }
+    env = await resticEnvironmentForRepository(profile.repository, resolvedPassword);
 
     await retryOnTransientAuth(() => ensureResticRepository(restic.path, profile.repository, env, trackResticChild), profile);
     if (runState.stopRequested) {
