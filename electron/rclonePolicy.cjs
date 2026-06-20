@@ -1,6 +1,78 @@
+const GOOGLE_DRIVE_RESTIC_PACK_SIZE = "64";
+
+const GOOGLE_DRIVE_RCLONE_RESTIC_ARGS = [
+  "serve restic",
+  "--stdio",
+  "--fast-list",
+  "--b2-hard-delete",
+  "--checkers 1",
+  "--transfers 1",
+  "--max-connections 2",
+  "--tpslimit 2",
+  "--tpslimit-burst 2",
+  "--low-level-retries 20",
+  "--retries 8",
+  "--retries-sleep 30s",
+  "--timeout 10m",
+  "--contimeout 60s",
+  "--buffer-size 32M",
+  "--expect-continue-timeout 5s",
+  "--drive-use-trash=false",
+  "--drive-pacer-min-sleep 200ms",
+  "--drive-pacer-burst 2",
+  "--drive-chunk-size 64M",
+  "--drive-acknowledge-abuse"
+].join(" ");
+
+const GOOGLE_DRIVE_RCLONE_ENV = Object.freeze({
+  RESTIC_PACK_SIZE: GOOGLE_DRIVE_RESTIC_PACK_SIZE,
+  RCLONE_CHECKERS: "1",
+  RCLONE_TRANSFERS: "1",
+  RCLONE_MAX_CONNECTIONS: "2",
+  RCLONE_TPSLIMIT: "2",
+  RCLONE_TPSLIMIT_BURST: "2",
+  RCLONE_LOW_LEVEL_RETRIES: "20",
+  RCLONE_RETRIES: "8",
+  RCLONE_RETRIES_SLEEP: "30s",
+  RCLONE_TIMEOUT: "10m",
+  RCLONE_CONTIMEOUT: "60s",
+  RCLONE_BUFFER_SIZE: "32M",
+  RCLONE_EXPECT_CONTINUE_TIMEOUT: "5s",
+  RCLONE_DRIVE_CHUNK_SIZE: "64M",
+  RCLONE_DRIVE_USE_TRASH: "false",
+  RCLONE_DRIVE_PACER_MIN_SLEEP: "200ms",
+  RCLONE_DRIVE_PACER_BURST: "2",
+  RCLONE_DRIVE_ACKNOWLEDGE_ABUSE: "true"
+});
+
+function rcloneResticOptions(repositoryOrTarget) {
+  const target = typeof repositoryOrTarget === "string" ? repositoryOrTarget : repositoryOrTarget?.target;
+  if (!String(target ?? "").trim().startsWith("rclone:") || !isGoogleDriveRepository(repositoryOrTarget)) return [];
+  return [
+    "-o",
+    `rclone.args=${GOOGLE_DRIVE_RCLONE_RESTIC_ARGS}`,
+    "-o",
+    "rclone.connections=2",
+    "-o",
+    "rclone.timeout=30m"
+  ];
+}
+
+function rcloneEnvironmentDefaults(repositoryOrTarget) {
+  return isGoogleDriveRepository(repositoryOrTarget) ? { ...GOOGLE_DRIVE_RCLONE_ENV } : {};
+}
+
+function resticBackupOptions(repositoryOrTarget) {
+  return isGoogleDriveRepository(repositoryOrTarget) ? ["--pack-size", GOOGLE_DRIVE_RESTIC_PACK_SIZE] : [];
+}
+
+function isGoogleDriveRepository(repositoryOrTarget) {
+  return Boolean(repositoryOrTarget && typeof repositoryOrTarget === "object" && repositoryOrTarget.rcloneBackend === "drive");
+}
+
 function sanitizeRcloneOutput(output) {
   return String(output ?? "")
-    .replace(/https?:\/\/\S+/gi, "[authorization link hidden]")
+    .replace(/https?:\/\/\S+/gi, "[link hidden]")
     .replace(/\S*(code|state|session_crd|access_token|refresh_token|id_token|client_secret)=\S*/gi, "$1=[hidden]")
     .trim();
 }
@@ -18,7 +90,7 @@ function isRcloneAuthorizationFailure(output) {
 }
 
 function isNetworkError(error) {
-  return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|temporary failure|temporary error|transport|tls handshake|broken pipe|rate.?limit|too many requests|try again later|backend error|rclone:\s*5|HTTP 429|HTTP 500|HTTP 502|HTTP 503|HTTP 504|userRateLimitExceeded|dailyLimitExceeded|storageQuotaExceeded|uploadRateLimitExceeded|quota|upload limit/i.test(errorOutput(error));
+  return /network|offline|unavailable|timed?\s*out|timeout|connection|connect|reset|refused|unreachable|dns|getaddrinfo|resolve|lookup|no such host|unknown host|host not found|could not resolve|econn|etimedout|enotfound|eai_again|no route|i\/o timeout|context deadline|context cancel(?:ed|led)|temporary failure|temporary error|transport|tls handshake|broken pipe|rate.?limit|too many requests|try again later|backend error|rclone:\s*5|HTTP 429|HTTP 500|HTTP 502|HTTP 503|HTTP 504|HTTP response \((?:429|5\d\d)\)|\b5\d\d Internal Server Error\b|userRateLimitExceeded|dailyLimitExceeded|storageQuotaExceeded|uploadRateLimitExceeded|quota|upload limit/i.test(errorOutput(error));
 }
 
 function isRetryableRcloneError(error) {
@@ -40,6 +112,9 @@ function errorOutput(error) {
 }
 
 module.exports = {
+  rcloneResticOptions,
+  resticBackupOptions,
+  rcloneEnvironmentDefaults,
   sanitizeRcloneOutput,
   isMissingRcloneRemoteError,
   isNetworkError,

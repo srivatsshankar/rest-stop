@@ -9,6 +9,9 @@ const zlib = require("node:zlib");
 const log = require("electron-log");
 const { autoUpdater } = require("electron-updater");
 const {
+  rcloneResticOptions,
+  rcloneEnvironmentDefaults,
+  resticBackupOptions,
   sanitizeRcloneOutput,
   isMissingRcloneRemoteError,
   isNetworkError,
@@ -2115,7 +2118,7 @@ function rcloneTargetFromResticTarget(target) {
 function resticRepositoryArgs(repositoryOrTarget) {
   const target = typeof repositoryOrTarget === "string" ? repositoryOrTarget : repositoryOrTarget?.target;
   const repositoryTarget = String(target ?? "").trim();
-  return ["-r", repositoryTarget];
+  return [...rcloneResticOptions(repositoryOrTarget), "-r", repositoryTarget];
 }
 
 
@@ -2274,12 +2277,7 @@ async function resticEnvironmentForRepository(repository, password) {
     const rclone = await findRclone();
     if (!rclone?.path) throw new Error("Rclone is not installed.");
     env = envWithRcloneConfigPassword(envWithToolDirectory(env, rclone.path));
-
-    if (repository.rcloneBackend === "drive") {
-      env.RCLONE_TPSLIMIT = "10";
-      env.RCLONE_DRIVE_CHUNK_SIZE = "128M";
-      env.RCLONE_DRIVE_USE_TRASH = "false";
-    }
+    env = { ...env, ...rcloneEnvironmentDefaults(repository) };
   }
   return env;
 }
@@ -2500,7 +2498,7 @@ async function startBackup(profile, password) {
     runState.pid = null;
     runState.child = null;
     const excludeArgs = normalizeExcludePatterns(profile.excludes).flatMap((pattern) => ["--exclude", pattern]);
-    const resticBackupFlags = ["--retry-lock", "5m"];
+    const resticBackupFlags = ["--retry-lock", "5m", ...resticBackupOptions(profile.repository)];
     const args = ["--json", ...resticRepositoryArgs(profile.repository), "backup", ...resticBackupFlags, ...excludeArgs, ...profile.sources];
     child = childProcess.spawn(restic.path, args, { env, windowsHide: true });
     runState.pid = child.pid ?? null;
@@ -2647,7 +2645,7 @@ function scheduleNetworkBackupRetry(profile, password, reason, currentState = {}
     retryPassword: password,
     retryReason: String(reason ?? ""),
     progressLabel: `Waiting for network location. Retrying at ${retryAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`,
-    errorDetails: null
+    errorDetails: reason ? backupErrorDetails(reason, profile) : null
   });
   installPendingUpdateWhenIdle();
 }

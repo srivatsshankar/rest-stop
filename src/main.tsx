@@ -1901,10 +1901,10 @@ function BackupList({
         const versionCount: BackupVersionCount = reviewRequired ? { status: "pending" } : versionCounts[profile.id] ?? { status: "loading" };
         const statusLabel = isProfileRunning
           ? "Running"
-          : backupError
-            ? "Failed"
-            : isProfileWaiting
-              ? "Waiting for network"
+          : isProfileWaiting
+            ? "Waiting for network"
+            : backupError
+              ? "Failed"
               : retryPending
                 ? "Retry pending"
                 : reviewRequired
