@@ -932,7 +932,7 @@ function App() {
       setGoogleDriveCredentials(savedCredentials);
       setGoogleDriveCredentialsMasked(Boolean(savedCredentials.clientId || savedCredentials.clientSecret));
       setGoogleDriveCredentialsSaveStatus("saved");
-      setConfigMessage("Google Drive credentials saved.");
+      setConfigMessage("Google Drive credentials saved. Existing Google Drive backups were updated when available.");
     } catch (error) {
       setGoogleDriveCredentialsSaveStatus("idle");
       setConfigMessage(error instanceof Error ? error.message : "Unable to save Google Drive credentials.");

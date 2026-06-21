@@ -1731,15 +1731,49 @@ function saveBackupDefaults(settings) {
   return readSettings();
 }
 
-function saveGoogleDriveCredentials(credentials) {
+async function saveGoogleDriveCredentials(credentials) {
+  const googleDriveCredentials = normalizeGoogleDriveCredentials(credentials);
+  await applyGoogleDriveCredentialsToBackups(googleDriveCredentials);
   const nextSettings = {
     ...readSettings(),
-    googleDriveCredentials: normalizeGoogleDriveCredentials(credentials)
+    googleDriveCredentials
   };
   writeSettings(nextSettings);
   return readSettings();
 }
 
+async function applyGoogleDriveCredentialsToBackups(credentials) {
+  if (!credentials.clientId || !credentials.clientSecret) return;
+
+  const remoteNames = [...new Set(listProfiles()
+    .filter((profile) => profile?.repository?.type === "rclone"
+      && profile.repository.rcloneBackend === "drive"
+      && profile.repository.rcloneRemoteName)
+    .map((profile) => sanitizeRcloneRemoteName(profile.repository.rcloneRemoteName)))];
+  if (remoteNames.length === 0) return;
+
+  const rclone = await ensureRclone();
+  if (!rclone.installed || !rclone.path) {
+    throw new Error(rclone.message ?? "Rclone is not installed or is not available on PATH. Install Rclone, then save these Google Drive credentials again.");
+  }
+  await ensureRcloneConfigEncrypted(rclone.path);
+
+  for (const remoteName of remoteNames) {
+    try {
+      await runProcess(
+        rclone.path,
+        ["config", "update", remoteName, "client_id", credentials.clientId, "client_secret", credentials.clientSecret, "--non-interactive", "--obscure"],
+        rcloneProcessOptions({ timeoutMs: 60 * 1000 })
+      );
+      clearCacheByPrefix(rcloneDirectoryCache, `rclone:${remoteName}:`);
+    } catch (error) {
+      if (/not found|doesn't exist|couldn't find|not in config/i.test(errorOutput(error))) {
+        throw new Error(`The Rclone remote "${remoteName}" is not connected on this computer. Reconnect that Google Drive backup, then save these Google Drive credentials again.`);
+      }
+      throw error;
+    }
+  }
+}
 
 function getAutoUpdatesEnabled() {
   return readSettings().autoUpdatesEnabled !== false;
