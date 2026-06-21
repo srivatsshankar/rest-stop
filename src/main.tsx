@@ -236,6 +236,7 @@ type GoogleDriveCredentials = {
   clientId: string;
   clientSecret: string;
 };
+type GoogleDriveCredentialsSaveStatus = "idle" | "saving" | "saved";
 
 function emptyGoogleDriveCredentials(): GoogleDriveCredentials {
   return { clientId: "", clientSecret: "" };
@@ -675,6 +676,8 @@ function App() {
     checkedAt: new Date().toISOString()
   });
   const [view, setView] = useState<AppView>("home");
+  const [googleDriveCredentialsMasked, setGoogleDriveCredentialsMasked] = useState(false);
+  const [googleDriveCredentialsSaveStatus, setGoogleDriveCredentialsSaveStatus] = useState<GoogleDriveCredentialsSaveStatus>("idle");
   const [googleDriveCredentials, setGoogleDriveCredentials] = useState<GoogleDriveCredentials>(() => emptyGoogleDriveCredentials());
   const [viewHistory, setViewHistory] = useState<AppView[]>([]);
   const [editingProfile, setEditingProfile] = useState<BackupProfile | null>(null);
@@ -723,11 +726,16 @@ function App() {
       .then((settings) => {
         setAutoUpdatesEnabledState(settings.autoUpdatesEnabled !== false);
         setDefaultExcludes(excludePatternsToText(settings.defaultExcludes));
-        setGoogleDriveCredentials(normalizeGoogleDriveCredentials(settings.googleDriveCredentials));
+        const credentials = normalizeGoogleDriveCredentials(settings.googleDriveCredentials);
+        setGoogleDriveCredentials(credentials);
+        setGoogleDriveCredentialsMasked(Boolean(credentials.clientId || credentials.clientSecret));
+        setGoogleDriveCredentialsSaveStatus("idle");
       })
       .catch(() => {
         setAutoUpdatesEnabledState(true);
         setDefaultExcludes(defaultExcludeText);
+        setGoogleDriveCredentialsMasked(false);
+        setGoogleDriveCredentialsSaveStatus("idle");
         setGoogleDriveCredentials(emptyGoogleDriveCredentials());
       });
   }, []);
@@ -909,17 +917,24 @@ function App() {
 
   function handleGoogleDriveCredentialsChange(credentials: GoogleDriveCredentials) {
     setGoogleDriveCredentials(credentials);
+    setGoogleDriveCredentialsMasked(false);
+    setGoogleDriveCredentialsSaveStatus("idle");
   }
 
   async function handleGoogleDriveCredentialsSave() {
+    setGoogleDriveCredentialsSaveStatus("saving");
     setConfigMessage("");
     const normalized = normalizeGoogleDriveCredentials(googleDriveCredentials);
     setGoogleDriveCredentials(normalized);
     try {
       const settings = await bridge.saveGoogleDriveCredentials(normalized);
-      setGoogleDriveCredentials(normalizeGoogleDriveCredentials(settings.googleDriveCredentials));
+      const savedCredentials = normalizeGoogleDriveCredentials(settings.googleDriveCredentials);
+      setGoogleDriveCredentials(savedCredentials);
+      setGoogleDriveCredentialsMasked(Boolean(savedCredentials.clientId || savedCredentials.clientSecret));
+      setGoogleDriveCredentialsSaveStatus("saved");
       setConfigMessage("Google Drive credentials saved.");
     } catch (error) {
+      setGoogleDriveCredentialsSaveStatus("idle");
       setConfigMessage(error instanceof Error ? error.message : "Unable to save Google Drive credentials.");
     }
   }
@@ -942,7 +957,10 @@ function App() {
       const restoredProfiles = result.profiles ?? [];
       setProfiles(restoredProfiles);
       setVersionCounts({});
-      setGoogleDriveCredentials(normalizeGoogleDriveCredentials(result.settings?.googleDriveCredentials));
+      const restoredCredentials = normalizeGoogleDriveCredentials(result.settings?.googleDriveCredentials);
+      setGoogleDriveCredentials(restoredCredentials);
+      setGoogleDriveCredentialsMasked(Boolean(restoredCredentials.clientId || restoredCredentials.clientSecret));
+      setGoogleDriveCredentialsSaveStatus("idle");
       setExpandedProfileId(null);
       setAutoUpdatesEnabledState(result.settings?.autoUpdatesEnabled !== false);
       setDefaultExcludes(excludePatternsToText(result.settings?.defaultExcludes ?? defaultExcludePatterns));
@@ -1379,6 +1397,8 @@ function App() {
                 updateStatus={updateStatus}
                 defaultExcludes={defaultExcludes}
                 googleDriveCredentials={googleDriveCredentials}
+                googleDriveCredentialsMasked={googleDriveCredentialsMasked}
+                googleDriveCredentialsSaveStatus={googleDriveCredentialsSaveStatus}
                 configMessage={configMessage}
                 onCheckRestic={runResticCheck}
                 onCheckRclone={runRcloneCheck}
@@ -1711,6 +1731,8 @@ function SettingsView({
   updateStatus,
   defaultExcludes,
   googleDriveCredentials,
+  googleDriveCredentialsMasked,
+  googleDriveCredentialsSaveStatus,
   configMessage,
   onCheckRestic,
   onCheckRclone,
@@ -1735,6 +1757,8 @@ function SettingsView({
   googleDriveCredentials: GoogleDriveCredentials;
   configMessage: string;
   onCheckRestic: () => void;
+  googleDriveCredentialsMasked: boolean;
+  googleDriveCredentialsSaveStatus: GoogleDriveCredentialsSaveStatus;
   onCheckRclone: () => void;
   onThemeChange: (mode: ThemeMode) => void;
   onAutoUpdatesChange: (enabled: boolean) => void;
@@ -1746,6 +1770,8 @@ function SettingsView({
   onRestoreConfig: () => void;
 }) {
   const updateIsChecking = updateChecking || updateStatus.status === "checking";
+  const googleDriveCredentialsSaving = googleDriveCredentialsSaveStatus === "saving";
+  const googleDriveCredentialsSaved = googleDriveCredentialsSaveStatus === "saved";
 
   return (
     <section className="settings-view rounded-md border border-ink/10 bg-white p-5 shadow-sm">
@@ -1784,7 +1810,7 @@ function SettingsView({
               <span>Google Drive OAuth Client ID</span>
               <input
                 className="text-input"
-                type="password"
+                type={googleDriveCredentialsMasked ? "password" : "text"}
                 value={googleDriveCredentials.clientId}
                 onChange={(event) => onGoogleDriveCredentialsChange({ ...googleDriveCredentials, clientId: event.target.value })}
                 placeholder="Optional"
@@ -1794,7 +1820,7 @@ function SettingsView({
               <span>Google Drive OAuth Client Secret</span>
               <input
                 className="text-input"
-                type="password"
+                type={googleDriveCredentialsMasked ? "password" : "text"}
                 value={googleDriveCredentials.clientSecret}
                 onChange={(event) => onGoogleDriveCredentialsChange({ ...googleDriveCredentials, clientSecret: event.target.value })}
                 placeholder="Optional"
@@ -1802,8 +1828,8 @@ function SettingsView({
             </label>
           </div>
           <div className="google-drive-credentials-actions">
-            <button className="secondary-button justify-center" onClick={onSaveGoogleDriveCredentials} type="button">
-              <FontAwesomeIcon icon={faCheck} /> Save client ID and secret
+            <button className="secondary-button justify-center" disabled={googleDriveCredentialsSaving} onClick={onSaveGoogleDriveCredentials} type="button">
+              <FontAwesomeIcon className={googleDriveCredentialsSaving ? "animate-spin" : ""} icon={googleDriveCredentialsSaving ? faRotateRight : faCheck} /> {googleDriveCredentialsSaving ? "Saving..." : googleDriveCredentialsSaved ? "Saved" : "Save client ID and secret"}
             </button>
           </div>
           <GoogleDriveCredentialsHelp />
