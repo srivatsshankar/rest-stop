@@ -25,8 +25,9 @@ test("Google Drive restic options use conservative rclone defaults", () => {
   assert.match(args, /--tpslimit-burst 2/);
   assert.match(args, /--low-level-retries 20/);
   assert.match(args, /--retries 8/);
-  assert.match(args, /--timeout 10m/);
+  assert.match(args, /--timeout 30m/);
   assert.match(args, /--drive-chunk-size 64M/);
+  assert.match(args, /--drive-stop-on-upload-limit/);
   assert.deepEqual(options.slice(-4), ["-o", "rclone.connections=2", "-o", "rclone.timeout=30m"]);
 });
 
@@ -50,8 +51,9 @@ test("Google Drive environment defaults tune restic and rclone", () => {
   assert.equal(env.RCLONE_TPSLIMIT_BURST, "2");
   assert.equal(env.RCLONE_LOW_LEVEL_RETRIES, "20");
   assert.equal(env.RCLONE_RETRIES, "8");
-  assert.equal(env.RCLONE_TIMEOUT, "10m");
+  assert.equal(env.RCLONE_TIMEOUT, "30m");
   assert.equal(env.RCLONE_DRIVE_CHUNK_SIZE, "64M");
+  assert.equal(env.RCLONE_DRIVE_STOP_ON_UPLOAD_LIMIT, "true");
   assert.deepEqual(resticBackupOptions({ target: "rclone:remote:path", rcloneBackend: "onedrive" }), []);
   assert.deepEqual(rcloneEnvironmentDefaults({ target: "rclone:remote:path", rcloneBackend: "onedrive" }), {});
 });

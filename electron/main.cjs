@@ -64,7 +64,8 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const NETWORK_RETRY_MS = 2 * 60 * 1000;
 const MAX_NETWORK_RETRY_MS = 60 * 60 * 1000;
 const RESTIC_REPOSITORY_TIMEOUT_MS = 10 * 60 * 1000;
-const BACKUP_STALL_TIMEOUT_MS = 20 * 60 * 1000;
+const DEFAULT_BACKUP_STALL_TIMEOUT_MS = 20 * 60 * 1000;
+const GOOGLE_DRIVE_BACKUP_STALL_TIMEOUT_MS = 60 * 60 * 1000;
 const AUTH_RETRY_DELAY_MS = 5 * 1000;
 const RCLONE_CONFIG_PASSWORD_KEY = "encryptedRcloneConfigPassword";
 const FAILURE_NOTIFICATION_HISTORY_FILE = "failure-notifications.json";
@@ -1759,10 +1760,26 @@ async function applyGoogleDriveCredentialsToBackups(credentials) {
   await ensureRcloneConfigEncrypted(rclone.path);
 
   for (const remoteName of remoteNames) {
+    if (!await rcloneRemoteExists(rclone.path, remoteName)) {
+      throw new Error(`The Rclone remote "${remoteName}" is not connected on this computer. Reconnect that Google Drive backup, then save these Google Drive credentials again.`);
+    }
+
+    let auth;
+    try {
+      auth = await runProcess(
+        rclone.path,
+        ["authorize", "drive", credentials.clientId, credentials.clientSecret],
+        rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 })
+      );
+    } catch (error) {
+      throw friendlyRcloneAuthorizeError(error, "Google Drive");
+    }
+    const token = extractJsonObject(`${auth.stdout}\n${auth.stderr}`);
+
     try {
       await runProcess(
         rclone.path,
-        ["config", "update", remoteName, "client_id", credentials.clientId, "client_secret", credentials.clientSecret, "--non-interactive", "--obscure"],
+        ["config", "update", remoteName, "client_id", credentials.clientId, "client_secret", credentials.clientSecret, "token", token, "--non-interactive", "--obscure"],
         rcloneProcessOptions({ timeoutMs: 60 * 1000 })
       );
       clearCacheByPrefix(rcloneDirectoryCache, `rclone:${remoteName}:`);
@@ -2180,6 +2197,11 @@ function resticRepositoryArgs(repositoryOrTarget) {
   return [...rcloneResticOptions(repositoryOrTarget), "-r", repositoryTarget];
 }
 
+function backupStallTimeoutMs(repositoryOrTarget) {
+  return repositoryOrTarget?.type === "rclone" && repositoryOrTarget.rcloneBackend === "drive"
+    ? GOOGLE_DRIVE_BACKUP_STALL_TIMEOUT_MS
+    : DEFAULT_BACKUP_STALL_TIMEOUT_MS;
+}
 
 function deleteLocalRepository(target) {
   const resolved = path.resolve(String(target ?? ""));
@@ -2589,12 +2611,13 @@ async function startBackup(profile, password) {
 
   let stdoutBuffer = "";
   runState.lastActivityAt = Date.now();
+  const stallTimeoutMs = backupStallTimeoutMs(profile.repository);
   const stallCheckInterval = setInterval(() => {
     if (!runState.running || runState.stopRequested) {
       clearInterval(stallCheckInterval);
       return;
     }
-    if (Date.now() - runState.lastActivityAt > BACKUP_STALL_TIMEOUT_MS) {
+    if (Date.now() - runState.lastActivityAt > stallTimeoutMs) {
       clearInterval(stallCheckInterval);
       runState.stalledKill = true;
       terminateBackupRun(runState).catch(() => {});
@@ -2642,7 +2665,7 @@ async function startBackup(profile, password) {
     if (runState.failureHandled) return;
     if (stdoutBuffer.trim()) updateBackupProgressFromLine(profileId, stdoutBuffer);
     if (runState.stalledKill && !runState.stopRequested) {
-      runState.stderr = `${runState.stderr}\nBackup timed out: no progress for 10 minutes.`.trim();
+      runState.stderr = `${runState.stderr}\nBackup timed out: no progress for ${Math.round(stallTimeoutMs / (60 * 1000))} minutes.`.trim();
     }
     if (!runState.stopRequested && code === 0) {
       knownRepositories.add(profile.repository?.target);

@@ -42,6 +42,7 @@ import "./styles.css";
 
 const APP_ICON_SRC = "app-icon/icon.png";
 const APP_VERSION = packageJson.version;
+const CONFIG_MESSAGE_DISMISS_MS = 2 * 60 * 1000;
 
 type RepositoryType = "local" | "sftp" | "rest" | "rclone";
 type RcloneBackend = "drive" | "onedrive" | "dropbox" | "box" | "pcloud" | "yandex" | "mega" | "b2" | "s3" | "smb";
@@ -741,6 +742,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!configMessage.startsWith("Google Drive credentials saved.")) return;
+    const timeout = window.setTimeout(() => setConfigMessage(""), CONFIG_MESSAGE_DISMISS_MS);
+    return () => window.clearTimeout(timeout);
+  }, [configMessage]);
+
+  useEffect(() => {
     profilesRef.current = profiles;
   }, [profiles]);
 
@@ -1400,6 +1407,7 @@ function App() {
                 googleDriveCredentialsMasked={googleDriveCredentialsMasked}
                 googleDriveCredentialsSaveStatus={googleDriveCredentialsSaveStatus}
                 configMessage={configMessage}
+                onDismissConfigMessage={() => setConfigMessage("")}
                 onCheckRestic={runResticCheck}
                 onCheckRclone={runRcloneCheck}
                 onThemeChange={setThemeMode}
@@ -1439,7 +1447,7 @@ function App() {
                   runs={restoreRuns}
                   onDismiss={(runId) => setRestoreRuns((current) => current.filter((run) => run.id !== runId))}
                 />
-                {configMessage ? <p className="setup-status">{configMessage}</p> : null}
+                {configMessage ? <DismissibleSetupStatus message={configMessage} onDismiss={() => setConfigMessage("")} /> : null}
                 {profiles.length === 0 ? (
                   <EmptyState onCreate={openCreateBackup} onRestore={() => navigateTo("restore")} />
                 ) : (
@@ -1720,6 +1728,17 @@ function GoogleDriveCredentialsHelp() {
   );
 }
 
+function DismissibleSetupStatus({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  return (
+    <div className="setup-status dismissible-setup-status" role="status">
+      <span>{message}</span>
+      <button className="dismiss-status-button" type="button" aria-label="Dismiss message" onClick={onDismiss}>
+        <FontAwesomeIcon icon={faXmark} />
+      </button>
+    </div>
+  );
+}
+
 function SettingsView({
   restic,
   resticChecking,
@@ -1742,6 +1761,7 @@ function SettingsView({
   onDefaultExcludesChange,
   onGoogleDriveCredentialsChange,
   onSaveGoogleDriveCredentials,
+  onDismissConfigMessage,
   onExportConfig,
   onRestoreConfig
 }: {
@@ -1766,6 +1786,7 @@ function SettingsView({
   onDefaultExcludesChange: (value: string) => void;
   onGoogleDriveCredentialsChange: (credentials: GoogleDriveCredentials) => void;
   onSaveGoogleDriveCredentials: () => void;
+  onDismissConfigMessage: () => void;
   onExportConfig: () => void;
   onRestoreConfig: () => void;
 }) {
@@ -1869,7 +1890,7 @@ function SettingsView({
             </div>
           </div>
         </div>
-        {configMessage ? <p className="setup-status">{configMessage}</p> : null}
+        {configMessage ? <DismissibleSetupStatus message={configMessage} onDismiss={onDismissConfigMessage} /> : null}
       </section>
 
       <section className="settings-section backup-defaults-section">
