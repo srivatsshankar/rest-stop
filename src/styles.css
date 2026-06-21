@@ -77,6 +77,10 @@ button:disabled {
   margin-top: 1.75rem;
 }
 
+.user-credentials-section {
+  margin-top: 2.25rem;
+}
+
 .performance-section {
   margin-top: 1.75rem;
 }
@@ -107,6 +111,87 @@ button:disabled {
   text-transform: uppercase;
   color: rgb(29 37 44 / 55%);
 }
+.google-drive-info {
+  display: grid;
+  min-width: 0;
+  border-top: 1px solid rgb(29 37 44 / 10%);
+  border-bottom: 1px solid rgb(29 37 44 / 10%);
+}
+
+.google-drive-info-summary {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.65rem 0;
+  text-align: left;
+}
+
+.google-drive-info-summary:hover .google-drive-info-title {
+  color: #245247;
+}
+
+.google-drive-info-summary:focus-visible {
+  outline: none;
+  border-radius: 0.3rem;
+  box-shadow: 0 0 0 3px rgb(36 82 71 / 18%);
+}
+
+.google-drive-info-title {
+  overflow: hidden;
+  color: #1d252c;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.google-drive-info-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0 0 0.75rem 2rem;
+  color: rgb(29 37 44 / 70%);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.google-drive-info-body p {
+  margin: 0;
+}
+
+.google-drive-info-body .small-button {
+  max-width: 100%;
+  width: fit-content;
+}
+
+.google-drive-credentials-actions {
+  display: grid;
+}
+
+.google-drive-credential-fields {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.google-drive-credential-field {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.42fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.google-drive-credential-field span {
+  color: rgb(29 37 44 / 75%);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.google-drive-credential-field .text-input {
+  min-width: 0;
+}
+
 
 .notifications-view {
   display: grid;
@@ -735,6 +820,27 @@ button:disabled {
 [data-theme="dark"] .settings-label {
   color: rgb(244 241 234 / 68%);
 }
+[data-theme="dark"] .google-drive-info {
+  border-color: rgb(221 226 226 / 12%);
+}
+
+[data-theme="dark"] .google-drive-info-title,
+[data-theme="dark"] .google-drive-credential-field span {
+  color: #f4f1ea;
+}
+
+[data-theme="dark"] .google-drive-info-summary:hover .google-drive-info-title {
+  color: #8fc3b5;
+}
+
+[data-theme="dark"] .google-drive-info-summary:focus-visible {
+  box-shadow: 0 0 0 3px rgb(143 195 181 / 18%);
+}
+
+[data-theme="dark"] .google-drive-info-body {
+  color: rgb(244 241 234 / 68%);
+}
+
 
 [data-theme="dark"] .notifications-empty,
 [data-theme="dark"] .notification-log-list li {
@@ -1725,6 +1831,15 @@ button:disabled {
 }
 
 @media (max-width: 640px) {
+  .google-drive-info-body {
+    padding-left: 1.65rem;
+  }
+
+  .google-drive-credential-field {
+    grid-template-columns: minmax(7.5rem, 0.8fr) minmax(0, 1fr);
+    gap: 0.55rem;
+  }
+
 
   .notifications-view-header {
     align-items: stretch;

@@ -517,6 +517,7 @@ function registerIpc() {
   ipcMain.handle("restore:start", (_event, options) => startRestore(options));
   ipcMain.handle("settings:get", () => readSettings());
   ipcMain.handle("settings:save-backup-defaults", (_event, settings) => saveBackupDefaults(settings));
+  ipcMain.handle("settings:save-google-drive-credentials", (_event, credentials) => saveGoogleDriveCredentials(credentials));
   ipcMain.handle("updates:get-auto-enabled", () => getAutoUpdatesEnabled());
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
   ipcMain.handle("updates:get-status", getUpdateStatus);
@@ -969,7 +970,7 @@ async function configureRcloneRemote(options) {
   }
 
   if (backendConfig.auth === "oauth") {
-    const oauthClientValues = backend === "drive" ? googleDriveOAuthClientValues() : [];
+    const oauthClientValues = backend === "drive" ? googleDriveOAuthClientValues(configValues) : [];
     if (oauthClientValues.length) {
       configArgs.push("client_id", oauthClientValues[0], "client_secret", oauthClientValues[1]);
       shouldObscure = true;
@@ -1015,9 +1016,14 @@ async function configureRcloneRemote(options) {
   };
 }
 
-function googleDriveOAuthClientValues() {
-  const clientId = String(process.env.RESTSTOP_GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
-  const clientSecret = String(process.env.RESTSTOP_GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+function googleDriveOAuthClientValues(configValues = {}) {
+  const settingsCredentials = readSettings().googleDriveCredentials ?? normalizeGoogleDriveCredentials();
+  const clientId = String(configValues.client_id ?? "").trim()
+    || settingsCredentials.clientId
+    || String(process.env.RESTSTOP_GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
+  const clientSecret = String(configValues.client_secret ?? "").trim()
+    || settingsCredentials.clientSecret
+    || String(process.env.RESTSTOP_GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
   return clientId && clientSecret ? [clientId, clientSecret] : [];
 }
 
@@ -1423,7 +1429,8 @@ function defaultConfig() {
   return {
     version: 1,
     settings: {
-      defaultExcludes: DEFAULT_EXCLUDES
+      defaultExcludes: DEFAULT_EXCLUDES,
+      googleDriveCredentials: normalizeGoogleDriveCredentials()
     },
     profiles: []
   };
@@ -1480,10 +1487,19 @@ function rcloneProcessOptions(options = {}) {
 function normalizeSettings(settings) {
   const normalized = {
     ...settings,
-    defaultExcludes: normalizeDefaultExcludePatterns(settings.defaultExcludes)
+    defaultExcludes: normalizeDefaultExcludePatterns(settings.defaultExcludes),
+    googleDriveCredentials: normalizeGoogleDriveCredentials(settings.googleDriveCredentials)
   };
   delete normalized.highPerformance;
   return normalized;
+}
+
+function normalizeGoogleDriveCredentials(value = {}) {
+  const credentials = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    clientId: String(credentials.clientId ?? "").trim(),
+    clientSecret: String(credentials.clientSecret ?? "").trim()
+  };
 }
 
 function normalizeDefaultExcludePatterns(value) {
@@ -1710,6 +1726,15 @@ function saveBackupDefaults(settings) {
   const nextSettings = {
     ...readSettings(),
     defaultExcludes: normalizeExcludePatterns(settings?.defaultExcludes)
+  };
+  writeSettings(nextSettings);
+  return readSettings();
+}
+
+function saveGoogleDriveCredentials(credentials) {
+  const nextSettings = {
+    ...readSettings(),
+    googleDriveCredentials: normalizeGoogleDriveCredentials(credentials)
   };
   writeSettings(nextSettings);
   return readSettings();

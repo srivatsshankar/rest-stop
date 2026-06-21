@@ -229,7 +229,26 @@ type UpdateStatus = {
 type AppSettings = {
   autoUpdatesEnabled?: boolean;
   defaultExcludes: string[];
+  googleDriveCredentials: GoogleDriveCredentials;
 };
+
+type GoogleDriveCredentials = {
+  clientId: string;
+  clientSecret: string;
+};
+
+function emptyGoogleDriveCredentials(): GoogleDriveCredentials {
+  return { clientId: "", clientSecret: "" };
+}
+
+function normalizeGoogleDriveCredentials(value?: Partial<GoogleDriveCredentials> | null): GoogleDriveCredentials {
+  return {
+    clientId: String(value?.clientId ?? "").trim(),
+    clientSecret: String(value?.clientSecret ?? "").trim()
+  };
+}
+
+const GOOGLE_DRIVE_CLIENT_ID_DOCS_URL = "https://rclone.org/drive/#making-your-own-client-id";
 
 type ReststopBridge = {
   ensureRestic: () => Promise<ResticStatus>;
@@ -251,6 +270,7 @@ type ReststopBridge = {
   getStoredPassword: (profileId: string) => Promise<string | null>;
   savePassword: (profileId: string, password: string) => Promise<void>;
   connectRcloneAccount: (options: { backend: RcloneBackend; remoteName: string; config: Record<string, string>; replaceRemote?: boolean }) => Promise<RcloneAccountResult>;
+  saveGoogleDriveCredentials: (credentials: GoogleDriveCredentials) => Promise<AppSettings>;
   setupRcloneRepository: (options: { backend: RcloneBackend; remoteName: string; repositoryPath: string; password: string; config: Record<string, string>; replaceRemote?: boolean }) => Promise<RcloneSetupResult>;
   listRcloneDirectory: (options: { remoteName: string; path?: string }) => Promise<DirectoryListing>;
   createRcloneDirectory: (options: { remoteName: string; path: string }) => Promise<DirectoryListing>;
@@ -359,8 +379,9 @@ const fallbackBridge: ReststopBridge = {
   startRestore: async () => {
     throw new Error("Run inside Electron to restore files.");
   },
-  getSettings: async () => ({ defaultExcludes: defaultExcludePatterns }),
-  saveBackupDefaults: async (settings) => ({ defaultExcludes: normalizeExcludePatterns(settings.defaultExcludes) }),
+  getSettings: async () => ({ defaultExcludes: defaultExcludePatterns, googleDriveCredentials: emptyGoogleDriveCredentials() }),
+  saveBackupDefaults: async (settings) => ({ defaultExcludes: normalizeExcludePatterns(settings.defaultExcludes), googleDriveCredentials: emptyGoogleDriveCredentials() }),
+  saveGoogleDriveCredentials: async (credentials) => ({ defaultExcludes: defaultExcludePatterns, googleDriveCredentials: normalizeGoogleDriveCredentials(credentials) }),
   getAutoUpdatesEnabled: async () => true,
   setAutoUpdatesEnabled: async (enabled) => enabled,
   getUpdateStatus: async () => ({
@@ -416,7 +437,10 @@ const locationOptions: { value: LocationOption; label: string }[] = [
 ];
 
 const rcloneConfigFields: Record<RcloneBackend, { key: string; label: string; type?: "password"; placeholder?: string; required?: boolean }[]> = {
-  drive: [],
+  drive: [
+    { key: "client_id", label: "Google Drive OAuth Client ID", placeholder: "Optional" },
+    { key: "client_secret", label: "Google Drive OAuth Client Secret", type: "password", placeholder: "Optional" }
+  ],
   onedrive: [],
   dropbox: [],
   box: [],
@@ -651,6 +675,7 @@ function App() {
     checkedAt: new Date().toISOString()
   });
   const [view, setView] = useState<AppView>("home");
+  const [googleDriveCredentials, setGoogleDriveCredentials] = useState<GoogleDriveCredentials>(() => emptyGoogleDriveCredentials());
   const [viewHistory, setViewHistory] = useState<AppView[]>([]);
   const [editingProfile, setEditingProfile] = useState<BackupProfile | null>(null);
   const [expandedProfileId, setExpandedProfileId] = useState<string | null>(null);
@@ -698,10 +723,12 @@ function App() {
       .then((settings) => {
         setAutoUpdatesEnabledState(settings.autoUpdatesEnabled !== false);
         setDefaultExcludes(excludePatternsToText(settings.defaultExcludes));
+        setGoogleDriveCredentials(normalizeGoogleDriveCredentials(settings.googleDriveCredentials));
       })
       .catch(() => {
         setAutoUpdatesEnabledState(true);
         setDefaultExcludes(defaultExcludeText);
+        setGoogleDriveCredentials(emptyGoogleDriveCredentials());
       });
   }, []);
 
@@ -880,11 +907,28 @@ function App() {
     }
   }
 
+  function handleGoogleDriveCredentialsChange(credentials: GoogleDriveCredentials) {
+    setGoogleDriveCredentials(credentials);
+  }
+
+  async function handleGoogleDriveCredentialsSave() {
+    setConfigMessage("");
+    const normalized = normalizeGoogleDriveCredentials(googleDriveCredentials);
+    setGoogleDriveCredentials(normalized);
+    try {
+      const settings = await bridge.saveGoogleDriveCredentials(normalized);
+      setGoogleDriveCredentials(normalizeGoogleDriveCredentials(settings.googleDriveCredentials));
+      setConfigMessage("Google Drive credentials saved.");
+    } catch (error) {
+      setConfigMessage(error instanceof Error ? error.message : "Unable to save Google Drive credentials.");
+    }
+  }
+
   async function handleExportConfig() {
     setConfigMessage("");
     try {
       const result = await bridge.exportConfig();
-      if (!result.cancelled) setConfigMessage(`Config saved to ${result.path}.`);
+      if (!result.cancelled) setConfigMessage(`Config saved to ${result.path}. This file may contain your Google Drive OAuth client ID and secret.`);
     } catch (error) {
       setConfigMessage(error instanceof Error ? error.message : "Unable to save the config file.");
     }
@@ -898,6 +942,7 @@ function App() {
       const restoredProfiles = result.profiles ?? [];
       setProfiles(restoredProfiles);
       setVersionCounts({});
+      setGoogleDriveCredentials(normalizeGoogleDriveCredentials(result.settings?.googleDriveCredentials));
       setExpandedProfileId(null);
       setAutoUpdatesEnabledState(result.settings?.autoUpdatesEnabled !== false);
       setDefaultExcludes(excludePatternsToText(result.settings?.defaultExcludes ?? defaultExcludePatterns));
@@ -916,7 +961,7 @@ function App() {
     setConfigMessage("");
     try {
       const result = await bridge.exportBackupConfig(profile.id);
-      if (!result.cancelled) setConfigMessage(`Backup config saved to ${result.path}.`);
+      if (!result.cancelled) setConfigMessage(`Backup config saved to ${result.path}. Exported config files may contain your Google Drive OAuth client ID and secret.`);
     } catch (error) {
       setConfigMessage(error instanceof Error ? error.message : "Unable to save this backup config.");
     }
@@ -1333,6 +1378,7 @@ function App() {
                 updateChecking={updateChecking}
                 updateStatus={updateStatus}
                 defaultExcludes={defaultExcludes}
+                googleDriveCredentials={googleDriveCredentials}
                 configMessage={configMessage}
                 onCheckRestic={runResticCheck}
                 onCheckRclone={runRcloneCheck}
@@ -1340,6 +1386,8 @@ function App() {
                 onAutoUpdatesChange={handleAutoUpdatesChange}
                 onCheckUpdates={runUpdateCheck}
                 onDefaultExcludesChange={handleDefaultExcludesChange}
+                onGoogleDriveCredentialsChange={handleGoogleDriveCredentialsChange}
+                onSaveGoogleDriveCredentials={handleGoogleDriveCredentialsSave}
                 onExportConfig={handleExportConfig}
                 onRestoreConfig={handleRestoreConfig}
               />
@@ -1358,6 +1406,7 @@ function App() {
                 initialProfile={editingProfile}
                 profiles={profiles}
                 defaultExcludes={defaultExcludes}
+                googleDriveCredentials={googleDriveCredentials}
                 onCancel={goBack}
                 onLoadExisting={handleLoadBackupConfig}
                 onSave={handleSave}
@@ -1628,6 +1677,29 @@ function UpdateStatusBox({ status }: { status: UpdateStatus }) {
   );
 }
 
+
+function GoogleDriveCredentialsHelp() {
+  const [expanded, setExpanded] = useState(false);
+  const helpId = "google-drive-credentials-information";
+
+  return (
+    <section className="google-drive-info">
+      <button aria-controls={helpId} aria-expanded={expanded} className="google-drive-info-summary" onClick={() => setExpanded((open) => !open)} type="button">
+        <FontAwesomeIcon className="backup-expand-icon" icon={expanded ? faChevronDown : faChevronRight} />
+        <span className="google-drive-info-title">Information</span>
+      </button>
+      {expanded ? (
+        <div className="google-drive-info-body" id={helpId}>
+          <p>Optional. Use your own Google Drive OAuth client ID and secret to avoid sharing rclone's default Google Drive client quota. rclone recommends this for better Google Drive performance.</p>
+          <button className="small-button" onClick={() => bridge.openExternal(GOOGLE_DRIVE_CLIENT_ID_DOCS_URL)} type="button">
+            <FontAwesomeIcon icon={faArrowRight} /> Get more information
+          </button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function SettingsView({
   restic,
   resticChecking,
@@ -1638,6 +1710,7 @@ function SettingsView({
   updateChecking,
   updateStatus,
   defaultExcludes,
+  googleDriveCredentials,
   configMessage,
   onCheckRestic,
   onCheckRclone,
@@ -1645,6 +1718,8 @@ function SettingsView({
   onAutoUpdatesChange,
   onCheckUpdates,
   onDefaultExcludesChange,
+  onGoogleDriveCredentialsChange,
+  onSaveGoogleDriveCredentials,
   onExportConfig,
   onRestoreConfig
 }: {
@@ -1657,6 +1732,7 @@ function SettingsView({
   updateChecking: boolean;
   updateStatus: UpdateStatus;
   defaultExcludes: string;
+  googleDriveCredentials: GoogleDriveCredentials;
   configMessage: string;
   onCheckRestic: () => void;
   onCheckRclone: () => void;
@@ -1664,6 +1740,8 @@ function SettingsView({
   onAutoUpdatesChange: (enabled: boolean) => void;
   onCheckUpdates: () => void;
   onDefaultExcludesChange: (value: string) => void;
+  onGoogleDriveCredentialsChange: (credentials: GoogleDriveCredentials) => void;
+  onSaveGoogleDriveCredentials: () => void;
   onExportConfig: () => void;
   onRestoreConfig: () => void;
 }) {
@@ -1695,6 +1773,41 @@ function SettingsView({
           </div>
         </div>
         <UpdateStatusBox status={updateStatus} />
+      </section>
+
+      <section className="settings-section user-credentials-section">
+        <p className="settings-label">User Credentials</p>
+        <div className="grid gap-3 rounded-md border border-ink/10 bg-paper px-4 py-3">
+          <p className="text-sm font-semibold">Google Drive</p>
+          <div className="google-drive-credential-fields">
+            <label className="google-drive-credential-field">
+              <span>Google Drive OAuth Client ID</span>
+              <input
+                className="text-input"
+                type="password"
+                value={googleDriveCredentials.clientId}
+                onChange={(event) => onGoogleDriveCredentialsChange({ ...googleDriveCredentials, clientId: event.target.value })}
+                placeholder="Optional"
+              />
+            </label>
+            <label className="google-drive-credential-field">
+              <span>Google Drive OAuth Client Secret</span>
+              <input
+                className="text-input"
+                type="password"
+                value={googleDriveCredentials.clientSecret}
+                onChange={(event) => onGoogleDriveCredentialsChange({ ...googleDriveCredentials, clientSecret: event.target.value })}
+                placeholder="Optional"
+              />
+            </label>
+          </div>
+          <div className="google-drive-credentials-actions">
+            <button className="secondary-button justify-center" onClick={onSaveGoogleDriveCredentials} type="button">
+              <FontAwesomeIcon icon={faCheck} /> Save client ID and secret
+            </button>
+          </div>
+          <GoogleDriveCredentialsHelp />
+        </div>
       </section>
 
       <section className="settings-section appearance-section">
@@ -2472,6 +2585,7 @@ function BackupWizard({
   initialProfile,
   profiles,
   defaultExcludes,
+  googleDriveCredentials,
   onCancel,
   onLoadExisting,
   onSave
@@ -2479,6 +2593,7 @@ function BackupWizard({
   initialProfile: BackupProfile | null;
   profiles: BackupProfile[];
   defaultExcludes: string;
+  googleDriveCredentials: GoogleDriveCredentials;
   onCancel: () => void;
   onLoadExisting: () => Promise<boolean>;
   onSave: (profile: DraftProfile) => Promise<void>;
@@ -2493,7 +2608,13 @@ function BackupWizard({
   const [rcloneRepositoryPath, setRcloneRepositoryPath] = useState(() => initialProfile?.repository.rclonePath ?? defaultRcloneRepositoryPath(initialProfile?.name ?? ""));
   const [rclonePathTouched, setRclonePathTouched] = useState(Boolean(initialProfile?.repository.rclonePath));
   const [rcloneBrowserOpen, setRcloneBrowserOpen] = useState(false);
-  const [rcloneConfig, setRcloneConfig] = useState<Record<string, string>>({ provider: "AWS", region: "us-east-1", domain: "WORKGROUP" });
+  const [rcloneConfig, setRcloneConfig] = useState<Record<string, string>>(() => ({
+    provider: "AWS",
+    region: "us-east-1",
+    domain: "WORKGROUP",
+    client_id: googleDriveCredentials.clientId,
+    client_secret: googleDriveCredentials.clientSecret
+  }));
   const [rcloneSetup, setRcloneSetup] = useState<{ status: RcloneSetupStatus; message: string }>({ status: "idle", message: "" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -2594,6 +2715,19 @@ function BackupWizard({
     }
     return highest;
   }, [stepRequirements, steps.length]);
+  useEffect(() => {
+    if (rcloneBackend !== "drive") return;
+    setRcloneConfig((current) => {
+      const clientId = current.client_id || googleDriveCredentials.clientId;
+      const clientSecret = current.client_secret || googleDriveCredentials.clientSecret;
+      if (clientId === current.client_id && clientSecret === current.client_secret) return current;
+      return {
+        ...current,
+        client_id: clientId,
+        client_secret: clientSecret
+      };
+    });
+  }, [googleDriveCredentials.clientId, googleDriveCredentials.clientSecret, rcloneBackend]);
 
   useEffect(() => {
     const backupNameChanged = previousDraftNameRef.current !== draft.name;
@@ -2943,6 +3077,7 @@ function BackupWizard({
                   ))}
                 </div>
               ) : null}
+              {rcloneBackend === "drive" ? <GoogleDriveCredentialsHelp /> : null}
               {rcloneBackend === "smb" ? (
                 <button className="small-button w-fit" onClick={chooseSmbFolder}>
                   <FontAwesomeIcon icon={faFolderOpen} /> Choose with File Explorer
