@@ -37,8 +37,7 @@
     ],
     "win": {
       "target": [
-        "nsis",
-        "msi"
+        "nsis"
       ],
       "artifactName": "Rest-Stop-${version}-windows.${ext}",
       "executableName": "Rest Stop",

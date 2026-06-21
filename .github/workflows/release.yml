@@ -43,7 +43,6 @@ jobs:
           $files = @(
             "release/Rest-Stop-$version-windows.exe",
             "release/Rest-Stop-$version-windows.exe.blockmap",
-            "release/Rest-Stop-$version-windows.msi",
             "release/latest.yml"
           )
           foreach ($file in $files) {

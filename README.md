@@ -156,7 +156,7 @@ Fill in `md/releases/vX.Y.Z.md` with the features, fixes, and maintenance notes 
 release-github.bat
 ```
 
-The publish script overwrites the `vX.Y.Z` tag and removes an existing GitHub release if needed. GitHub Actions then builds the Windows `.exe` and `.msi` files, creates the release as a draft with the markdown file as the release body, attaches the installers, and publishes the release only after the files are attached.
+The publish script overwrites the `vX.Y.Z` tag and removes an existing GitHub release if needed. GitHub Actions then builds the Windows `.exe` files, creates the release as a draft with the markdown file as the release body, attaches the installers, and publishes the release only after the files are attached.
 
 ## Credits
 
