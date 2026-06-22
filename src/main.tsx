@@ -34,6 +34,7 @@ import {
   faStop,
   faSun,
   faTrashCan,
+  faWrench,
   faXmark
 } from "@fortawesome/free-solid-svg-icons";
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
@@ -680,9 +681,9 @@ const schedulePresetOptions: { value: SchedulePreset; label: string }[] = [
 ];
 const customScheduleUnits: BackupScheduleUnit[] = ["minutes", "hours", "days", "months", "years"];
 const backupRepairOptions: { value: BackupRepairMode; label: string; tooltip: string }[] = [
-  { value: "index", label: "Repair index", tooltip: "Rebuild repository index files" },
-  { value: "snapshots-dry-run", label: "Preview snapshot repair", tooltip: "Preview snapshot metadata repairs" },
-  { value: "snapshots-forget", label: "Repair snapshots", tooltip: "Repair snapshot metadata and forget replaced snapshots" }
+  { value: "index", label: "Repair", tooltip: "Rebuild repository index files" },
+  { value: "snapshots-forget", label: "Repair Snapshot", tooltip: "Repair snapshot metadata and forget replaced snapshots" },
+  { value: "snapshots-dry-run", label: "Preview Snapshot", tooltip: "Preview snapshot metadata repairs" }
 ];
 const weekdayOptions = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -2385,28 +2386,65 @@ function BackupRepairSection({
   disabled: boolean;
   onRepair: (mode: BackupRepairMode) => void;
 }) {
+  const [snapshotMenuOpen, setSnapshotMenuOpen] = useState(false);
   const statusClass = status?.status === "error" ? "error" : status?.status === "success" ? "success" : "";
+  const repairOption = backupRepairOptions.find((option) => option.value === "index") ?? backupRepairOptions[0];
+  const repairSnapshotOption = backupRepairOptions.find((option) => option.value === "snapshots-forget") ?? backupRepairOptions[1];
+  const previewSnapshotOption = backupRepairOptions.find((option) => option.value === "snapshots-dry-run") ?? backupRepairOptions[2];
+
+  function runRepair(mode: BackupRepairMode) {
+    setSnapshotMenuOpen(false);
+    onRepair(mode);
+  }
 
   return (
     <div className="backup-detail-row backup-repair-section">
       <dt>
-        <FontAwesomeIcon className={`backup-detail-icon ${running ? "animate-spin" : ""}`} icon={running ? faRotateRight : faShieldHalved} />
+        <FontAwesomeIcon className={`backup-detail-icon ${running ? "animate-spin" : ""}`} icon={running ? faRotateRight : faWrench} />
         <span>Backup Repair</span>
       </dt>
       <dd>
         <div className="backup-repair-actions">
-          {backupRepairOptions.map((option) => (
+          <button
+            className="secondary-button justify-center tooltip-button"
+            data-tooltip={repairOption.tooltip}
+            disabled={disabled}
+            onClick={() => runRepair("index")}
+            type="button"
+          >
+            <FontAwesomeIcon icon={faWrench} /> {running && status?.mode === "index" ? "Repairing..." : repairOption.label}
+          </button>
+          <div className="backup-repair-split" onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSnapshotMenuOpen(false);
+          }}>
             <button
-              key={option.value}
-              className="secondary-button justify-center tooltip-button"
-              data-tooltip={option.tooltip}
+              className="secondary-button justify-center tooltip-button backup-repair-split-main"
+              data-tooltip={repairSnapshotOption.tooltip}
               disabled={disabled}
-              onClick={() => onRepair(option.value)}
+              onClick={() => runRepair("snapshots-forget")}
               type="button"
             >
-              <FontAwesomeIcon icon={faShieldHalved} /> {running && status?.mode === option.value ? "Repairing..." : option.label}
+              <FontAwesomeIcon icon={faWrench} /> {running && status?.mode === "snapshots-forget" ? "Repairing..." : repairSnapshotOption.label}
             </button>
-          ))}
+            <button
+              aria-expanded={snapshotMenuOpen}
+              aria-label="Snapshot repair options"
+              className="secondary-button tooltip-button backup-repair-split-toggle"
+              data-tooltip="Snapshot repair options"
+              disabled={disabled}
+              onClick={() => setSnapshotMenuOpen((open) => !open)}
+              type="button"
+            >
+              <FontAwesomeIcon icon={faChevronDown} />
+            </button>
+            {snapshotMenuOpen ? (
+              <div className="dropdown-menu backup-repair-menu p-1">
+                <button className="menu-item" onMouseDown={(event) => event.preventDefault()} onClick={() => runRepair("snapshots-dry-run")} type="button">
+                  <FontAwesomeIcon icon={faWrench} /> {previewSnapshotOption.label}
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
         {status ? <p className={`backup-repair-status ${statusClass}`}>{status.message}</p> : null}
       </dd>

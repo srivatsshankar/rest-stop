@@ -719,7 +719,8 @@ button:disabled {
   right: 0;
   z-index: 1000;
   width: max-content;
-  max-width: 220px;
+  max-width: min(220px, calc(100vw - 2rem));
+  overflow-wrap: break-word;
   border: 1px solid rgb(29 37 44 / 14%);
   border-radius: 0.375rem;
   background: #1d252c;
@@ -733,7 +734,7 @@ button:disabled {
   pointer-events: none;
   transform: translateY(-4px);
   transition: opacity 120ms ease, transform 120ms ease;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .tooltip-button:hover::after,
@@ -1639,11 +1640,46 @@ button:disabled {
   margin-top: 1rem;
 }
 
+.backup-repair-section {
+  gap: 1.75rem;
+}
+
 .backup-repair-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.65rem;
   justify-content: flex-end;
+}
+
+.backup-repair-actions .tooltip-button::after {
+  right: 0;
+  left: auto;
+  text-align: left;
+}
+
+.backup-repair-split {
+  position: relative;
+  display: inline-flex;
+}
+
+.backup-repair-split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.backup-repair-split-toggle {
+  min-width: 38px;
+  justify-content: center;
+  border-left-width: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-inline: 0.55rem;
+}
+
+.backup-repair-menu {
+  top: calc(100% + 0.35rem);
+  right: 0;
+  min-width: 14rem;
 }
 
 .backup-repair-status {
@@ -1717,6 +1753,10 @@ button:disabled {
   min-height: 38px;
   padding: 0.55rem 0.75rem;
   white-space: nowrap;
+}
+
+.backup-repair-actions .backup-repair-split-toggle {
+  padding-inline: 0.55rem;
 }
 
 .backup-detail-list {
@@ -2552,6 +2592,10 @@ button:disabled {
   .filter-remove-button {
     grid-column: 2;
     justify-self: end;
+  }
+
+  .backup-repair-section {
+    gap: 1rem;
   }
 
   .backup-detail-actions,
