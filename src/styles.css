@@ -1682,6 +1682,18 @@ button:disabled {
   min-width: 14rem;
 }
 
+.backup-repair-menu .tooltip-button::after {
+  top: 50%;
+  right: calc(100% + 0.35rem);
+  left: auto;
+  transform: translateY(-50%);
+}
+
+.backup-repair-menu .tooltip-button:hover::after,
+.backup-repair-menu .tooltip-button:focus-visible::after {
+  transform: translateY(-50%);
+}
+
 .backup-repair-status {
   margin-top: 0.65rem;
   color: rgb(29 37 44 / 65%);

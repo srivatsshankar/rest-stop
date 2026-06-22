@@ -681,7 +681,7 @@ const schedulePresetOptions: { value: SchedulePreset; label: string }[] = [
 ];
 const customScheduleUnits: BackupScheduleUnit[] = ["minutes", "hours", "days", "months", "years"];
 const backupRepairOptions: { value: BackupRepairMode; label: string; tooltip: string }[] = [
-  { value: "index", label: "Repair", tooltip: "Rebuild repository index files" },
+  { value: "index", label: "Repair Index", tooltip: "Rebuild repository index files" },
   { value: "snapshots-forget", label: "Repair Snapshot", tooltip: "Repair snapshot metadata and forget replaced snapshots" },
   { value: "snapshots-dry-run", label: "Preview Snapshot", tooltip: "Preview snapshot metadata repairs" }
 ];
@@ -2387,14 +2387,21 @@ function BackupRepairSection({
   onRepair: (mode: BackupRepairMode) => void;
 }) {
   const [snapshotMenuOpen, setSnapshotMenuOpen] = useState(false);
+  const [selectedSnapshotMode, setSelectedSnapshotMode] = useState<BackupRepairMode>("snapshots-forget");
   const statusClass = status?.status === "error" ? "error" : status?.status === "success" ? "success" : "";
   const repairOption = backupRepairOptions.find((option) => option.value === "index") ?? backupRepairOptions[0];
-  const repairSnapshotOption = backupRepairOptions.find((option) => option.value === "snapshots-forget") ?? backupRepairOptions[1];
-  const previewSnapshotOption = backupRepairOptions.find((option) => option.value === "snapshots-dry-run") ?? backupRepairOptions[2];
+  const snapshotOptions = backupRepairOptions.filter((option) => option.value === "snapshots-forget" || option.value === "snapshots-dry-run");
+  const selectedSnapshotOption = snapshotOptions.find((option) => option.value === selectedSnapshotMode) ?? snapshotOptions[0];
+  const alternateSnapshotOptions = snapshotOptions.filter((option) => option.value !== selectedSnapshotOption.value);
 
   function runRepair(mode: BackupRepairMode) {
     setSnapshotMenuOpen(false);
     onRepair(mode);
+  }
+
+  function selectSnapshotMode(mode: BackupRepairMode) {
+    setSelectedSnapshotMode(mode);
+    setSnapshotMenuOpen(false);
   }
 
   return (
@@ -2419,12 +2426,12 @@ function BackupRepairSection({
           }}>
             <button
               className="secondary-button justify-center tooltip-button backup-repair-split-main"
-              data-tooltip={repairSnapshotOption.tooltip}
+              data-tooltip={selectedSnapshotOption.tooltip}
               disabled={disabled}
-              onClick={() => runRepair("snapshots-forget")}
+              onClick={() => runRepair(selectedSnapshotOption.value)}
               type="button"
             >
-              <FontAwesomeIcon icon={faWrench} /> {running && status?.mode === "snapshots-forget" ? "Repairing..." : repairSnapshotOption.label}
+              <FontAwesomeIcon icon={faWrench} /> {running && status?.mode === selectedSnapshotOption.value ? "Repairing..." : selectedSnapshotOption.label}
             </button>
             <button
               aria-expanded={snapshotMenuOpen}
@@ -2439,9 +2446,18 @@ function BackupRepairSection({
             </button>
             {snapshotMenuOpen ? (
               <div className="dropdown-menu backup-repair-menu p-1">
-                <button className="menu-item" onMouseDown={(event) => event.preventDefault()} onClick={() => runRepair("snapshots-dry-run")} type="button">
-                  <FontAwesomeIcon icon={faWrench} /> {previewSnapshotOption.label}
-                </button>
+                {alternateSnapshotOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    className="menu-item tooltip-button"
+                    data-tooltip={option.tooltip}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectSnapshotMode(option.value)}
+                    type="button"
+                  >
+                    <FontAwesomeIcon icon={faWrench} /> {option.label}
+                  </button>
+                ))}
               </div>
             ) : null}
           </div>
