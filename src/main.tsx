@@ -679,10 +679,10 @@ const schedulePresetOptions: { value: SchedulePreset; label: string }[] = [
   { value: "custom", label: "Manual recurring" }
 ];
 const customScheduleUnits: BackupScheduleUnit[] = ["minutes", "hours", "days", "months", "years"];
-const backupRepairOptions: { value: BackupRepairMode; label: string }[] = [
-  { value: "index", label: "Repair index" },
-  { value: "snapshots-dry-run", label: "Preview snapshot repair" },
-  { value: "snapshots-forget", label: "Repair snapshots" }
+const backupRepairOptions: { value: BackupRepairMode; label: string; tooltip: string }[] = [
+  { value: "index", label: "Repair index", tooltip: "Rebuild repository index files" },
+  { value: "snapshots-dry-run", label: "Preview snapshot repair", tooltip: "Preview snapshot metadata repairs" },
+  { value: "snapshots-forget", label: "Repair snapshots", tooltip: "Repair snapshot metadata and forget replaced snapshots" }
 ];
 const weekdayOptions = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -736,7 +736,6 @@ function App() {
   const [notificationsError, setNotificationsError] = useState("");
   const [restoreRuns, setRestoreRuns] = useState<RestoreRun[]>([]);
   const [versionCounts, setVersionCounts] = useState<Record<string, BackupVersionCount>>({});
-  const [repairModes, setRepairModes] = useState<Record<string, BackupRepairMode>>({});
   const [repairRuns, setRepairRuns] = useState<Record<string, BackupRepairStatus>>({});
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
   const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
@@ -1324,15 +1323,7 @@ function App() {
     await executeBackupRun(profile, "", false);
   }
 
-  function selectedRepairMode(profileId: string): BackupRepairMode {
-    return repairModes[profileId] ?? "index";
-  }
-
-  function updateRepairMode(profileId: string, mode: BackupRepairMode) {
-    setRepairModes((current) => ({ ...current, [profileId]: mode }));
-  }
-
-  async function startBackupRepair(profile: BackupProfile, mode = selectedRepairMode(profile.id)) {
+  async function startBackupRepair(profile: BackupProfile, mode: BackupRepairMode) {
     if (profile.passwordSet) {
       const stored = await bridge.getStoredPassword(profile.id);
       if (stored) {
@@ -1627,7 +1618,6 @@ function App() {
                     profiles={profiles}
                     backupStatus={backupStatus}
                     versionCounts={versionCounts}
-                    repairModes={repairModes}
                     repairRuns={repairRuns}
                     globalSchedulePaused={globalSchedulePaused}
                     expandedProfileId={expandedProfileId}
@@ -1637,7 +1627,6 @@ function App() {
                     onStop={handleStopBackup}
                     onPause={handlePauseProfile}
                     onRepair={startBackupRepair}
-                    onRepairModeChange={updateRepairMode}
                     onDelete={openDeleteBackup}
                     onExportConfig={handleExportBackupConfig}
                   />
@@ -2234,7 +2223,6 @@ function BackupList({
   profiles,
   backupStatus,
   versionCounts,
-  repairModes,
   repairRuns,
   globalSchedulePaused,
   expandedProfileId,
@@ -2244,14 +2232,12 @@ function BackupList({
   onStop,
   onPause,
   onRepair,
-  onRepairModeChange,
   onDelete,
   onExportConfig
 }: {
   profiles: BackupProfile[];
   backupStatus: BackupRunStatus;
   versionCounts: Record<string, BackupVersionCount>;
-  repairModes: Record<string, BackupRepairMode>;
   repairRuns: Record<string, BackupRepairStatus>;
   globalSchedulePaused: boolean;
   expandedProfileId: string | null;
@@ -2261,7 +2247,6 @@ function BackupList({
   onStop: (profile: BackupProfile) => void;
   onPause: (profile: BackupProfile, schedulePaused: boolean) => void;
   onRepair: (profile: BackupProfile, mode: BackupRepairMode) => void;
-  onRepairModeChange: (profileId: string, mode: BackupRepairMode) => void;
   onDelete: (profile: BackupProfile) => void;
   onExportConfig: (profile: BackupProfile) => void;
 }) {
@@ -2280,7 +2265,6 @@ function BackupList({
         const reviewRequired = Boolean(profile.reviewRequired);
         const retryPending = hasPendingBackup(profile);
         const versionCount: BackupVersionCount = reviewRequired ? { status: "pending" } : versionCounts[profile.id] ?? { status: "loading" };
-        const repairMode = repairModes[profile.id] ?? "index";
         const repairRun = repairRuns[profile.id];
         const repairRunning = repairRun?.status === "running";
         const statusLabel = isProfileRunning
@@ -2345,11 +2329,9 @@ function BackupList({
                 {reviewRequired ? <BackupReviewNotice /> : null}
                 <BackupRepairSection
                   disabled={isProfileActive || reviewRequired || repairRunning}
-                  mode={repairMode}
                   running={repairRunning}
                   status={repairRun}
-                  onModeChange={(mode) => onRepairModeChange(profile.id, mode)}
-                  onRepair={() => onRepair(profile, repairMode)}
+                  onRepair={(mode) => onRepair(profile, mode)}
                 />
                 <section className="backup-config-section">
                   <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
@@ -2393,44 +2375,45 @@ function BackupList({
 }
 
 function BackupRepairSection({
-  mode,
   status,
   running,
   disabled,
-  onModeChange,
   onRepair
 }: {
-  mode: BackupRepairMode;
   status?: BackupRepairStatus;
   running: boolean;
   disabled: boolean;
-  onModeChange: (mode: BackupRepairMode) => void;
-  onRepair: () => void;
+  onRepair: (mode: BackupRepairMode) => void;
 }) {
   const statusClass = status?.status === "error" ? "error" : status?.status === "success" ? "success" : "";
 
   return (
-    <section className="backup-repair-section">
-      <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
-        <div className="backup-repair-header">
-          <div className="flex items-center gap-3">
-            <FontAwesomeIcon className="backup-detail-icon" icon={faShieldHalved} />
-            <p className="text-sm font-semibold">Backup Repair</p>
-          </div>
-          <div className="backup-repair-actions">
-            <select className="text-input backup-repair-select" disabled={running} value={mode} onChange={(event) => onModeChange(event.target.value as BackupRepairMode)}>
-              {backupRepairOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-            <button className="small-button justify-center" disabled={disabled} onClick={onRepair} type="button">
-              <FontAwesomeIcon className={running ? "animate-spin" : ""} icon={running ? faRotateRight : faShieldHalved} /> {running ? "Repairing..." : "Repair"}
+    <div className="backup-detail-row backup-repair-section">
+      <dt>
+        <FontAwesomeIcon className={`backup-detail-icon ${running ? "animate-spin" : ""}`} icon={running ? faRotateRight : faShieldHalved} />
+        <span>Backup Repair</span>
+      </dt>
+      <dd>
+        <div className="backup-repair-actions">
+          {backupRepairOptions.map((option) => (
+            <button
+              key={option.value}
+              className="secondary-button justify-center tooltip-button"
+              data-tooltip={option.tooltip}
+              disabled={disabled}
+              onClick={() => onRepair(option.value)}
+              type="button"
+            >
+              <FontAwesomeIcon icon={faShieldHalved} /> {running && status?.mode === option.value ? "Repairing..." : option.label}
             </button>
-          </div>
+          ))}
         </div>
         {status ? <p className={`backup-repair-status ${statusClass}`}>{status.message}</p> : null}
-      </div>
-    </section>
+      </dd>
+    </div>
   );
 }
+
 function BackupVersionIndicator({ versionCount }: { versionCount: BackupVersionCount }) {
   const label = versionCount.status === "ready"
     ? `${versionCount.count ?? 0} ${(versionCount.count ?? 0) === 1 ? "version" : "versions"}`

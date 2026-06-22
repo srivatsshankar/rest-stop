@@ -1639,6 +1639,29 @@ button:disabled {
   margin-top: 1rem;
 }
 
+.backup-repair-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: flex-end;
+}
+
+.backup-repair-status {
+  margin-top: 0.65rem;
+  color: rgb(29 37 44 / 65%);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-align: right;
+}
+
+.backup-repair-status.success {
+  color: #245247;
+}
+
+.backup-repair-status.error {
+  color: #a64a3a;
+}
+
 .backup-config-section {
   border-top: 1px solid rgb(29 37 44 / 10%);
   padding: 0.85rem 0;
@@ -1688,7 +1711,8 @@ button:disabled {
 
 .backup-detail-actions .danger-button,
 .backup-detail-actions .primary-button,
-.backup-detail-actions .secondary-button {
+.backup-detail-actions .secondary-button,
+.backup-repair-actions .secondary-button {
   flex: 0 0 auto;
   min-height: 38px;
   padding: 0.55rem 0.75rem;
@@ -2306,6 +2330,18 @@ button:disabled {
   color: #f4f1ea;
 }
 
+[data-theme="dark"] .backup-repair-status {
+  color: rgb(244 241 234 / 68%);
+}
+
+[data-theme="dark"] .backup-repair-status.success {
+  color: #8fc3b5;
+}
+
+[data-theme="dark"] .backup-repair-status.error {
+  color: #e38f7d;
+}
+
 [data-theme="dark"] .backup-version-indicator {
   border-color: rgb(221 226 226 / 14%);
   background: rgb(125 169 158 / 12%);
@@ -2518,13 +2554,19 @@ button:disabled {
     justify-self: end;
   }
 
-  .backup-detail-actions {
+  .backup-detail-actions,
+  .backup-repair-actions {
     gap: 0.45rem;
   }
 
   .backup-detail-actions .danger-button,
   .backup-detail-actions .primary-button,
-  .backup-detail-actions .secondary-button {
+  .backup-detail-actions .secondary-button,
+  .backup-repair-actions .secondary-button {
     padding: 0.5rem 0.55rem;
+  }
+
+  .backup-repair-status {
+    text-align: left;
   }
 }
