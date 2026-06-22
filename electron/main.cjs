@@ -45,6 +45,7 @@ let tray;
 let currentTaskbarStatus = "paused";
 let isQuitting = false;
 let updateReadyToInstall = false;
+let updateInstallRequested = false;
 let updateInstallTimer = null;
 let updaterConfigured = false;
 let updateStatus = {
@@ -58,6 +59,7 @@ let updateStatus = {
 let activeRestoreRunCount = 0;
 const BACKGROUND_LAUNCH_ARG = "--reststop-background";
 const activeBackupRuns = new Map();
+const activeRepairRuns = new Set();
 let cachedRestic = null;
 let cachedRclone = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -324,16 +326,17 @@ function configureAutoUpdater() {
     });
     autoUpdater.on("update-downloaded", (info) => {
       updateReadyToInstall = true;
+      updateInstallRequested = false;
+      autoUpdater.autoInstallOnAppQuit = true;
       setUpdateStatus({
         status: "downloaded",
         version: updateInfoVersion(info) ?? updateStatus.version,
         percent: 100,
         pendingInstall: true,
         message: backupOrRestoreIsActive()
-          ? "Update downloaded. Installation is pending until backups and restores finish."
-          : "Update downloaded. Installation is pending."
+          ? "Update downloaded. It will install when Rest Stop restarts, or after backups and restores finish if you apply it now."
+          : "Update downloaded. It will install when Rest Stop restarts, or you can apply it now."
       });
-      installPendingUpdateWhenIdle();
     });
     autoUpdater.on("update-not-available", () => {
       setUpdateStatus({
@@ -367,12 +370,11 @@ function configureAutoUpdater() {
 function startAutoUpdateChecks() {
   if (updateInstallTimer) return;
   autoUpdater.autoDownload = true;
-  autoUpdater.checkForUpdatesAndNotify().catch((error) => {
+  autoUpdater.checkForUpdates().catch((error) => {
     log.error("Auto-update check failed", error);
   });
   updateInstallTimer = setInterval(() => {
-    if (updateReadyToInstall) installPendingUpdateWhenIdle();
-    else autoUpdater.checkForUpdates().catch((error) => log.error("Auto-update check failed", error));
+    if (!updateReadyToInstall) autoUpdater.checkForUpdates().catch((error) => log.error("Auto-update check failed", error));
   }, 6 * 60 * 60 * 1000);
   if (typeof updateInstallTimer.unref === "function") updateInstallTimer.unref();
 }
@@ -383,7 +385,9 @@ function stopAutoUpdateChecks() {
     updateInstallTimer = null;
   }
   autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
   updateReadyToInstall = false;
+  updateInstallRequested = false;
   setUpdateStatus({
     status: "disabled",
     version: null,
@@ -394,7 +398,7 @@ function stopAutoUpdateChecks() {
 }
 
 function installPendingUpdateWhenIdle() {
-  if (!getAutoUpdatesEnabled() || !updateReadyToInstall) return;
+  if (!getAutoUpdatesEnabled() || !updateReadyToInstall || !updateInstallRequested) return;
   if (backupOrRestoreIsActive()) {
     setUpdateStatus({
       status: "downloaded",
@@ -411,8 +415,22 @@ function installPendingUpdateWhenIdle() {
     message: "Installing update..."
   });
   updateReadyToInstall = false;
+  updateInstallRequested = false;
   isQuitting = true;
-  autoUpdater.quitAndInstall(false, true);
+  autoUpdater.quitAndInstall(true, true);
+}
+async function applyPendingUpdate() {
+  if (!app.isPackaged) {
+    configureAutoUpdater();
+    return getUpdateStatus();
+  }
+
+  if (!updaterConfigured) configureAutoUpdater();
+  if (!updateReadyToInstall) return getUpdateStatus();
+
+  updateInstallRequested = true;
+  installPendingUpdateWhenIdle();
+  return getUpdateStatus();
 }
 
 function getUpdateStatus() {
@@ -431,7 +449,6 @@ async function checkForUpdatesNow() {
 
   if (!updaterConfigured) configureAutoUpdater();
   if (updateReadyToInstall) {
-    installPendingUpdateWhenIdle();
     return getUpdateStatus();
   }
 
@@ -477,7 +494,7 @@ function clampPercent(value) {
 }
 
 function backupOrRestoreIsActive() {
-  return activeRestoreRunCount > 0 || [...activeBackupRuns.values()].some((state) => state?.running);
+  return activeRestoreRunCount > 0 || activeRepairRuns.size > 0 || [...activeBackupRuns.values()].some((state) => state?.running);
 }
 
 function isBackgroundLaunch() {
@@ -509,6 +526,7 @@ function registerIpc() {
   ipcMain.handle("backup:get-status", getBackupStatus);
   ipcMain.handle("backup:start", (_event, profile, password) => startBackup(profile, password));
   ipcMain.handle("backup:stop", (_event, profileId) => stopBackup(profileId));
+  ipcMain.handle("backup:repair", (_event, options) => repairBackup(options));
   ipcMain.handle("rclone:connect-account", (_event, options) => connectRcloneAccount(options));
   ipcMain.handle("rclone:setup-repository", (_event, options) => setupRcloneRepository(options));
   ipcMain.handle("rclone:list-directory", (_event, options) => listRcloneDirectory(options));
@@ -523,6 +541,7 @@ function registerIpc() {
   ipcMain.handle("updates:set-auto-enabled", (_event, enabled) => setAutoUpdatesEnabled(enabled));
   ipcMain.handle("updates:get-status", getUpdateStatus);
   ipcMain.handle("updates:check-now", checkForUpdatesNow);
+  ipcMain.handle("updates:apply-pending", applyPendingUpdate);
   ipcMain.handle("config:export", exportConfig);
   ipcMain.handle("config:restore", restoreConfig);
   ipcMain.handle("config:export-backup", (_event, profileId) => exportBackupConfig(profileId));
@@ -2256,6 +2275,59 @@ async function restoreSnapshotNodes(repository, password, snapshotId) {
   return nodes;
 }
 
+function resticRepairCommand(mode) {
+  switch (mode) {
+    case "index":
+      return { label: "Index repair", args: ["repair", "index"] };
+    case "snapshots-dry-run":
+      return { label: "Snapshot repair preview", args: ["repair", "snapshots", "--dry-run"] };
+    case "snapshots-forget":
+      return { label: "Snapshot repair", args: ["repair", "snapshots", "--forget"] };
+    default:
+      throw new Error("Choose a repair option.");
+  }
+}
+
+async function repairBackup(options) {
+  const profile = options?.profile;
+  const profileId = String(profile?.id ?? "");
+  if (!profileId) throw new Error("Choose a saved backup before repairing it.");
+  if (profile?.reviewRequired) throw new Error("Review and save this backup before repairing it.");
+  if (backupOrRestoreIsActive()) throw new Error("Wait for backups, restores, or repairs to finish before repairing this backup.");
+  const repository = normalizeRestoreRepository(profile?.repository);
+  const password = String(options?.password ?? "");
+  if (!password) throw new Error("Enter the backup password before repairing this backup.");
+  const command = resticRepairCommand(options?.mode);
+
+  activeRepairRuns.add(profileId);
+  try {
+    const restic = await findRestic();
+    if (!restic?.path) throw new Error("Restic is not installed.");
+    const env = await resticEnvironmentForRepository(repository, password);
+    const result = await runProcess(restic.path, [...resticRepositoryArgs(repository), "--retry-lock", "5m", ...command.args], {
+      env,
+      timeoutMs: 60 * 60 * 1000
+    });
+    clearRestoreRepositoryCache(repository);
+    const output = String(result.stdout || result.stderr || "").trim();
+    return {
+      mode: options?.mode,
+      status: "success",
+      message: output ? `${command.label} completed. ${output.split(/\r?\n/).slice(-2).join(" ")}` : `${command.label} completed.`,
+      checkedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      mode: options?.mode,
+      status: "error",
+      message: error instanceof Error ? error.message : "Unable to repair this backup.",
+      checkedAt: new Date().toISOString()
+    };
+  } finally {
+    activeRepairRuns.delete(profileId);
+    installPendingUpdateWhenIdle();
+  }
+}
 async function startRestore(options) {
   activeRestoreRunCount += 1;
   try {
@@ -2461,6 +2533,13 @@ function setCachedValue(cache, key, value) {
   pruneCache(cache);
 }
 
+function clearRestoreRepositoryCache(repository) {
+  if (!repository?.type || !repository?.target) return;
+  const prefix = ["restore", repository.type, repository.target].join(":") + ":";
+  clearCacheByPrefix(restoreSnapshotCache, prefix);
+  clearCacheByPrefix(restoreFileTreeCache, prefix);
+}
+
 function clearCacheByPrefix(cache, prefix) {
   for (const key of cache.keys()) {
     if (key.startsWith(prefix)) cache.delete(key);
@@ -2643,6 +2722,7 @@ async function startBackup(profile, password) {
         lastBackupCompletedAt: new Date().toISOString(),
         pendingBackupStartedAt: undefined
       });
+      clearRestoreRepositoryCache(profile.repository);
     } else if (runState.stopRequested) {
       clearBackupPending(profileId);
     }

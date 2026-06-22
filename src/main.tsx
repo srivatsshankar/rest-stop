@@ -182,6 +182,14 @@ type BackupRunStatus = {
   } | null;
   checkedAt: string;
 };
+type BackupRepairMode = "index" | "snapshots-dry-run" | "snapshots-forget";
+
+type BackupRepairStatus = {
+  mode: BackupRepairMode;
+  status: "running" | "success" | "error";
+  message: string;
+  checkedAt: string;
+};
 
 type RestoreStartOptions = {
   repository: BackupProfile["repository"];
@@ -282,6 +290,7 @@ type ReststopBridge = {
   getBackupStatus: () => Promise<BackupRunStatus>;
   startBackup: (profile: BackupProfile, password: string) => Promise<BackupRunStatus>;
   stopBackup: (profileId: string) => Promise<BackupRunStatus>;
+  repairBackup: (options: { profile: BackupProfile; password: string; mode: BackupRepairMode }) => Promise<BackupRepairStatus>;
   getStoredPassword: (profileId: string) => Promise<string | null>;
   savePassword: (profileId: string, password: string) => Promise<void>;
   connectRcloneAccount: (options: { backend: RcloneBackend; remoteName: string; config: Record<string, string>; replaceRemote?: boolean }) => Promise<RcloneAccountResult>;
@@ -298,6 +307,7 @@ type ReststopBridge = {
   setAutoUpdatesEnabled: (enabled: boolean) => Promise<boolean>;
   getUpdateStatus: () => Promise<UpdateStatus>;
   checkForUpdates: () => Promise<UpdateStatus>;
+  applyPendingUpdate: () => Promise<UpdateStatus>;
   exportConfig: () => Promise<{ cancelled: boolean; path?: string }>;
   restoreConfig: () => Promise<{ cancelled: boolean; path?: string; profiles?: BackupProfile[]; settings?: AppSettings }>;
   exportBackupConfig: (profileId: string) => Promise<{ cancelled: boolean; path?: string }>;
@@ -371,6 +381,12 @@ const fallbackBridge: ReststopBridge = {
     errorDetails: null,
     checkedAt: new Date().toISOString()
   }),
+  repairBackup: async (_options) => ({
+    mode: _options.mode,
+    status: "error",
+    message: "Run inside Electron to repair backups.",
+    checkedAt: new Date().toISOString()
+  }),
   getStoredPassword: async () => null,
   savePassword: async () => undefined,
   connectRcloneAccount: async () => {
@@ -409,6 +425,15 @@ const fallbackBridge: ReststopBridge = {
     checkedAt: new Date().toISOString()
   }),
   checkForUpdates: async () => ({
+    enabled: true,
+    status: "unavailable",
+    version: null,
+    percent: null,
+    pendingInstall: false,
+    message: "Update status is available in the installed app.",
+    checkedAt: new Date().toISOString()
+  }),
+  applyPendingUpdate: async () => ({
     enabled: true,
     status: "unavailable",
     version: null,
@@ -654,6 +679,11 @@ const schedulePresetOptions: { value: SchedulePreset; label: string }[] = [
   { value: "custom", label: "Manual recurring" }
 ];
 const customScheduleUnits: BackupScheduleUnit[] = ["minutes", "hours", "days", "months", "years"];
+const backupRepairOptions: { value: BackupRepairMode; label: string }[] = [
+  { value: "index", label: "Repair index" },
+  { value: "snapshots-dry-run", label: "Preview snapshot repair" },
+  { value: "snapshots-forget", label: "Repair snapshots" }
+];
 const weekdayOptions = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 const emptyDraft: DraftProfile = {
@@ -697,6 +727,7 @@ function App() {
   const [editingProfile, setEditingProfile] = useState<BackupProfile | null>(null);
   const [expandedProfileId, setExpandedProfileId] = useState<string | null>(null);
   const [passwordPrompt, setPasswordPrompt] = useState<BackupProfile | null>(null);
+  const [repairPasswordPrompt, setRepairPasswordPrompt] = useState<{ profile: BackupProfile; mode: BackupRepairMode } | null>(null);
   const [deletePromptOpen, setDeletePromptOpen] = useState(false);
   const [deleteProfileId, setDeleteProfileId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -705,9 +736,12 @@ function App() {
   const [notificationsError, setNotificationsError] = useState("");
   const [restoreRuns, setRestoreRuns] = useState<RestoreRun[]>([]);
   const [versionCounts, setVersionCounts] = useState<Record<string, BackupVersionCount>>({});
+  const [repairModes, setRepairModes] = useState<Record<string, BackupRepairMode>>({});
+  const [repairRuns, setRepairRuns] = useState<Record<string, BackupRepairStatus>>({});
   const [globalSchedulePaused, setGlobalSchedulePaused] = useState(() => localStorage.getItem("reststop-global-schedule-paused") === "true");
   const [autoUpdatesEnabled, setAutoUpdatesEnabledState] = useState(true);
   const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateApplying, setUpdateApplying] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
     enabled: true,
     status: "checking",
@@ -731,6 +765,7 @@ function App() {
   const globalSchedulePausedRef = useRef(globalSchedulePaused);
   const passwordPromptRef = useRef<BackupProfile | null>(null);
   const scheduledRunInProgressRef = useRef(false);
+  const versionCountRefreshKeysRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     bridge.getProfiles().then(setProfiles);
@@ -807,11 +842,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const activeBackupProfileIds = new Set(backupStatus.running ? backupStatus.profileIds : []);
     for (const profile of profiles) {
-      if (profile.reviewRequired) continue;
+      if (profile.reviewRequired || activeBackupProfileIds.has(profile.id)) continue;
       if (!versionCounts[profile.id]) void loadBackupVersionCount(profile);
     }
-  }, [profiles, versionCounts]);
+  }, [profiles, versionCounts, backupStatus.running, backupStatus.profileIds]);
 
   useEffect(() => {
     function closeMenuOnOutsideClick(event: MouseEvent) {
@@ -938,6 +974,30 @@ function App() {
     }
   }
 
+  async function applyPendingUpdate() {
+    setUpdateApplying(true);
+    setUpdateStatus((current) => ({
+      ...current,
+      status: current.pendingInstall ? "installing" : current.status,
+      message: current.pendingInstall ? "Preparing update install..." : current.message,
+      checkedAt: new Date().toISOString()
+    }));
+    try {
+      const status = await bridge.applyPendingUpdate();
+      setUpdateStatus(status);
+      setAutoUpdatesEnabledState(status.enabled);
+    } catch {
+      setUpdateStatus((current) => ({
+        ...current,
+        status: "error",
+        percent: null,
+        message: "Unable to apply the pending update.",
+        checkedAt: new Date().toISOString()
+      }));
+    } finally {
+      setUpdateApplying(false);
+    }
+  }
 
   async function handleDefaultExcludesChange(value: string) {
     setDefaultExcludes(value);
@@ -1073,6 +1133,15 @@ function App() {
       ]);
       setBackupStatus(status);
       setProfiles(savedProfiles);
+      if (!status.running && /^Backup completed\.?$/i.test(status.progressLabel ?? "")) {
+        for (const profileId of status.profileIds) {
+          const completedProfile = savedProfiles.find((profile) => profile.id === profileId);
+          const completedAt = completedProfile?.lastBackupCompletedAt;
+          if (!completedProfile || !completedAt || versionCountRefreshKeysRef.current[profileId] === completedAt) continue;
+          versionCountRefreshKeysRef.current[profileId] = completedAt;
+          void loadBackupVersionCount(normalizeProfile(completedProfile), true);
+        }
+      }
     } catch {
       setBackupStatus((current) => ({
         ...current,
@@ -1255,6 +1324,56 @@ function App() {
     await executeBackupRun(profile, "", false);
   }
 
+  function selectedRepairMode(profileId: string): BackupRepairMode {
+    return repairModes[profileId] ?? "index";
+  }
+
+  function updateRepairMode(profileId: string, mode: BackupRepairMode) {
+    setRepairModes((current) => ({ ...current, [profileId]: mode }));
+  }
+
+  async function startBackupRepair(profile: BackupProfile, mode = selectedRepairMode(profile.id)) {
+    if (profile.passwordSet) {
+      const stored = await bridge.getStoredPassword(profile.id);
+      if (stored) {
+        await executeBackupRepair(profile, mode, stored, false);
+        return;
+      }
+    }
+    setRepairPasswordPrompt({ profile, mode });
+  }
+
+  async function executeBackupRepair(profile: BackupProfile, mode: BackupRepairMode, password: string, persistPassword: boolean) {
+    setRepairPasswordPrompt(null);
+    setExpandedProfileId(profile.id);
+    setRepairRuns((current) => ({
+      ...current,
+      [profile.id]: {
+        mode,
+        status: "running",
+        message: "Repair is running...",
+        checkedAt: new Date().toISOString()
+      }
+    }));
+    try {
+      const result = await bridge.repairBackup({ profile, password, mode });
+      if (persistPassword && password) bridge.savePassword(profile.id, password).catch(() => { });
+      setRepairRuns((current) => ({ ...current, [profile.id]: result }));
+      if (result.status === "success") {
+        await loadBackupVersionCount(profile, true);
+      }
+    } catch (error) {
+      setRepairRuns((current) => ({
+        ...current,
+        [profile.id]: {
+          mode,
+          status: "error",
+          message: error instanceof Error ? error.message : "Unable to repair this backup.",
+          checkedAt: new Date().toISOString()
+        }
+      }));
+    }
+  }
   async function runDueScheduledBackup() {
     if (scheduledRunInProgressRef.current || globalSchedulePausedRef.current || backupStatusRef.current.running || passwordPromptRef.current) return;
     const dueProfile = profilesRef.current
@@ -1508,6 +1627,8 @@ function App() {
                     profiles={profiles}
                     backupStatus={backupStatus}
                     versionCounts={versionCounts}
+                    repairModes={repairModes}
+                    repairRuns={repairRuns}
                     globalSchedulePaused={globalSchedulePaused}
                     expandedProfileId={expandedProfileId}
                     onToggle={(profileId) => setExpandedProfileId((current) => current === profileId ? null : profileId)}
@@ -1515,6 +1636,8 @@ function App() {
                     onStart={startBackup}
                     onStop={handleStopBackup}
                     onPause={handlePauseProfile}
+                    onRepair={startBackupRepair}
+                    onRepairModeChange={updateRepairMode}
                     onDelete={openDeleteBackup}
                     onExportConfig={handleExportBackupConfig}
                   />
@@ -1524,7 +1647,7 @@ function App() {
           </ViewErrorBoundary>
         </div>
       </div>
-      <footer className="app-footer drag-region">Rest Stop // {profiles.length} {profiles.length === 1 ? "backup" : "backups"}</footer>
+      <AppFooter profileCount={profiles.length} showUpdate={view === "home" && updateStatus.pendingInstall} updateApplying={updateApplying} updateStatus={updateStatus} onApplyUpdate={applyPendingUpdate} />
       {passwordPrompt ? (
         <PasswordPromptModal
           profile={passwordPrompt}
@@ -1700,6 +1823,35 @@ function formatNotificationTime(value: string) {
     hour: "numeric",
     minute: "2-digit"
   });
+}
+
+function AppFooter({
+  profileCount,
+  showUpdate,
+  updateApplying,
+  updateStatus,
+  onApplyUpdate
+}: {
+  profileCount: number;
+  showUpdate: boolean;
+  updateApplying: boolean;
+  updateStatus: UpdateStatus;
+  onApplyUpdate: () => void;
+}) {
+  if (showUpdate) {
+    const installing = updateApplying || updateStatus.status === "installing";
+    const versionLabel = updateStatus.version ? `Version ${updateStatus.version} is ready.` : "Update ready.";
+    return (
+      <footer className="app-footer app-footer-update no-drag">
+        <span className="app-footer-update-text">{versionLabel} It will install when Rest Stop restarts.</span>
+        <button className="secondary-button justify-center" disabled={installing} onClick={onApplyUpdate} type="button">
+          <FontAwesomeIcon className={installing ? "animate-spin" : ""} icon={faRotateRight} /> {installing ? "Applying..." : "Apply update"}
+        </button>
+      </footer>
+    );
+  }
+
+  return <footer className="app-footer drag-region">Rest Stop // {profileCount} {profileCount === 1 ? "backup" : "backups"}</footer>;
 }
 
 function UpdateStatusBox({ status }: { status: UpdateStatus }) {
@@ -2082,6 +2234,8 @@ function BackupList({
   profiles,
   backupStatus,
   versionCounts,
+  repairModes,
+  repairRuns,
   globalSchedulePaused,
   expandedProfileId,
   onToggle,
@@ -2089,12 +2243,16 @@ function BackupList({
   onStart,
   onStop,
   onPause,
+  onRepair,
+  onRepairModeChange,
   onDelete,
   onExportConfig
 }: {
   profiles: BackupProfile[];
   backupStatus: BackupRunStatus;
   versionCounts: Record<string, BackupVersionCount>;
+  repairModes: Record<string, BackupRepairMode>;
+  repairRuns: Record<string, BackupRepairStatus>;
   globalSchedulePaused: boolean;
   expandedProfileId: string | null;
   onToggle: (profileId: string) => void;
@@ -2102,6 +2260,8 @@ function BackupList({
   onStart: (profile: BackupProfile) => void;
   onStop: (profile: BackupProfile) => void;
   onPause: (profile: BackupProfile, schedulePaused: boolean) => void;
+  onRepair: (profile: BackupProfile, mode: BackupRepairMode) => void;
+  onRepairModeChange: (profileId: string, mode: BackupRepairMode) => void;
   onDelete: (profile: BackupProfile) => void;
   onExportConfig: (profile: BackupProfile) => void;
 }) {
@@ -2120,6 +2280,9 @@ function BackupList({
         const reviewRequired = Boolean(profile.reviewRequired);
         const retryPending = hasPendingBackup(profile);
         const versionCount: BackupVersionCount = reviewRequired ? { status: "pending" } : versionCounts[profile.id] ?? { status: "loading" };
+        const repairMode = repairModes[profile.id] ?? "index";
+        const repairRun = repairRuns[profile.id];
+        const repairRunning = repairRun?.status === "running";
         const statusLabel = isProfileRunning
           ? "Running"
           : isProfileWaiting
@@ -2180,6 +2343,14 @@ function BackupList({
                 <BackupProgress status={backupStatus} hasProfileStatus={profileHasStatus} />
                 {backupError ? <BackupErrorDetails details={backupError} /> : null}
                 {reviewRequired ? <BackupReviewNotice /> : null}
+                <BackupRepairSection
+                  disabled={isProfileActive || reviewRequired || repairRunning}
+                  mode={repairMode}
+                  running={repairRunning}
+                  status={repairRun}
+                  onModeChange={(mode) => onRepairModeChange(profile.id, mode)}
+                  onRepair={() => onRepair(profile, repairMode)}
+                />
                 <section className="backup-config-section">
                   <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2221,6 +2392,45 @@ function BackupList({
   );
 }
 
+function BackupRepairSection({
+  mode,
+  status,
+  running,
+  disabled,
+  onModeChange,
+  onRepair
+}: {
+  mode: BackupRepairMode;
+  status?: BackupRepairStatus;
+  running: boolean;
+  disabled: boolean;
+  onModeChange: (mode: BackupRepairMode) => void;
+  onRepair: () => void;
+}) {
+  const statusClass = status?.status === "error" ? "error" : status?.status === "success" ? "success" : "";
+
+  return (
+    <section className="backup-repair-section">
+      <div className="rounded-md border border-ink/10 bg-paper px-4 py-3">
+        <div className="backup-repair-header">
+          <div className="flex items-center gap-3">
+            <FontAwesomeIcon className="backup-detail-icon" icon={faShieldHalved} />
+            <p className="text-sm font-semibold">Backup Repair</p>
+          </div>
+          <div className="backup-repair-actions">
+            <select className="text-input backup-repair-select" disabled={running} value={mode} onChange={(event) => onModeChange(event.target.value as BackupRepairMode)}>
+              {backupRepairOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <button className="small-button justify-center" disabled={disabled} onClick={onRepair} type="button">
+              <FontAwesomeIcon className={running ? "animate-spin" : ""} icon={running ? faRotateRight : faShieldHalved} /> {running ? "Repairing..." : "Repair"}
+            </button>
+          </div>
+        </div>
+        {status ? <p className={`backup-repair-status ${statusClass}`}>{status.message}</p> : null}
+      </div>
+    </section>
+  );
+}
 function BackupVersionIndicator({ versionCount }: { versionCount: BackupVersionCount }) {
   const label = versionCount.status === "ready"
     ? `${versionCount.count ?? 0} ${(versionCount.count ?? 0) === 1 ? "version" : "versions"}`

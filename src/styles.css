@@ -53,6 +53,31 @@ button:disabled {
   text-align: center;
 }
 
+.app-footer-update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: rgb(29 37 44 / 70%);
+  font-size: 0.78rem;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.app-footer-update-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-footer-update .secondary-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.78rem;
+}
+
 .dropdown-menu {
   position: absolute;
   right: 0;
@@ -730,6 +755,10 @@ button:disabled {
 [data-theme="dark"] .app-footer {
   border-top-color: rgb(221 226 226 / 12%);
   color: rgb(244 241 234 / 45%);
+}
+
+[data-theme="dark"] .app-footer-update {
+  color: rgb(244 241 234 / 76%);
 }
 
 [data-theme="dark"] .title-bar {
