@@ -1275,7 +1275,6 @@ function App() {
   }
 
   async function handleStopBackup(profile: BackupProfile) {
-    setExpandedProfileId(profile.id);
     setBackupStatus((current) => ({
       ...current,
       running: true,
@@ -1383,7 +1382,6 @@ function App() {
 
   async function executeBackupRun(profile: BackupProfile, password: string, persistPassword: boolean) {
     setPasswordPrompt(null);
-    setExpandedProfileId(profile.id);
     setBackupStatus((current) => ({
       ...current,
       running: true,
