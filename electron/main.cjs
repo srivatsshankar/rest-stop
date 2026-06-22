@@ -1732,64 +1732,32 @@ function saveBackupDefaults(settings) {
   return readSettings();
 }
 
-async function saveGoogleDriveCredentials(credentials) {
+function saveGoogleDriveCredentials(credentials) {
   const googleDriveCredentials = normalizeGoogleDriveCredentials(credentials);
-  await applyGoogleDriveCredentialsToBackups(googleDriveCredentials);
+  const config = readConfig();
   const nextSettings = {
-    ...readSettings(),
+    ...config.settings,
     googleDriveCredentials
   };
-  writeSettings(nextSettings);
+  writeConfig({
+    ...config,
+    settings: nextSettings,
+    profiles: googleDriveCredentials.clientId && googleDriveCredentials.clientSecret
+      ? markGoogleDriveBackupsForReconnect(config.profiles)
+      : config.profiles
+  });
   return readSettings();
 }
 
-async function applyGoogleDriveCredentialsToBackups(credentials) {
-  if (!credentials.clientId || !credentials.clientSecret) return;
-
-  const remoteNames = [...new Set(listProfiles()
-    .filter((profile) => profile?.repository?.type === "rclone"
-      && profile.repository.rcloneBackend === "drive"
-      && profile.repository.rcloneRemoteName)
-    .map((profile) => sanitizeRcloneRemoteName(profile.repository.rcloneRemoteName)))];
-  if (remoteNames.length === 0) return;
-
-  const rclone = await ensureRclone();
-  if (!rclone.installed || !rclone.path) {
-    throw new Error(rclone.message ?? "Rclone is not installed or is not available on PATH. Install Rclone, then save these Google Drive credentials again.");
-  }
-  await ensureRcloneConfigEncrypted(rclone.path);
-
-  for (const remoteName of remoteNames) {
-    if (!await rcloneRemoteExists(rclone.path, remoteName)) {
-      throw new Error(`The Rclone remote "${remoteName}" is not connected on this computer. Reconnect that Google Drive backup, then save these Google Drive credentials again.`);
-    }
-
-    let auth;
-    try {
-      auth = await runProcess(
-        rclone.path,
-        ["authorize", "drive", credentials.clientId, credentials.clientSecret],
-        rcloneProcessOptions({ timeoutMs: 5 * 60 * 1000 })
-      );
-    } catch (error) {
-      throw friendlyRcloneAuthorizeError(error, "Google Drive");
-    }
-    const token = extractJsonObject(`${auth.stdout}\n${auth.stderr}`);
-
-    try {
-      await runProcess(
-        rclone.path,
-        ["config", "update", remoteName, "client_id", credentials.clientId, "client_secret", credentials.clientSecret, "token", token, "--non-interactive", "--obscure"],
-        rcloneProcessOptions({ timeoutMs: 60 * 1000 })
-      );
-      clearCacheByPrefix(rcloneDirectoryCache, `rclone:${remoteName}:`);
-    } catch (error) {
-      if (/not found|doesn't exist|couldn't find|not in config/i.test(errorOutput(error))) {
-        throw new Error(`The Rclone remote "${remoteName}" is not connected on this computer. Reconnect that Google Drive backup, then save these Google Drive credentials again.`);
-      }
-      throw error;
-    }
-  }
+function markGoogleDriveBackupsForReconnect(profiles) {
+  return profiles.map((profile) => {
+    if (profile?.repository?.type !== "rclone" || profile.repository.rcloneBackend !== "drive") return profile;
+    return {
+      ...profile,
+      reviewRequired: true,
+      reviewReason: "google-drive-credentials"
+    };
+  });
 }
 
 function getAutoUpdatesEnabled() {
@@ -1964,6 +1932,7 @@ function prepareLoadedProfile(profile, existingProfiles) {
     passwordSet: false,
     schedulePaused: true,
     reviewRequired: true,
+    reviewReason: "restored",
     pendingBackupStartedAt: undefined,
     createdAt: profile.createdAt ?? now
   };
@@ -2052,7 +2021,7 @@ function saveProfile(profile) {
   const nextPassword = String(profile.password ?? "");
   const passwordConfirm = String(profile.passwordConfirm ?? "");
   const currentPassword = String(profile.currentPassword ?? "");
-  const restoringProfile = Boolean(existing?.reviewRequired);
+  const restoringProfile = Boolean(existing?.reviewRequired && existing.reviewReason !== "google-drive-credentials");
 
   const nextNameKey = backupNameKey(profile.name);
   if (nextNameKey && profiles.some((item) => item.id !== existing?.id && backupNameKey(item.name) === nextNameKey)) {
@@ -2089,6 +2058,7 @@ function saveProfile(profile) {
     excludes: normalizeExcludePatterns(profile.excludes),
     schedulePaused: Boolean(profile.schedulePaused ?? existing?.schedulePaused),
     reviewRequired: false,
+    reviewReason: undefined,
     lastBackupStartedAt: existing?.lastBackupStartedAt,
     lastBackupCompletedAt: existing?.lastBackupCompletedAt,
     pendingBackupStartedAt: existing?.pendingBackupStartedAt,

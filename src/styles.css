@@ -1407,6 +1407,7 @@ button:disabled {
 .setup-status.error {
   border-color: rgb(219 107 83 / 30%);
   background: rgb(219 107 83 / 12%);
+  color: #7b2f25;
 }
 
 .fault-panel {
@@ -2199,6 +2200,7 @@ button:disabled {
 [data-theme="dark"] .setup-status.error {
   border-color: rgb(219 107 83 / 35%);
   background: rgb(219 107 83 / 16%);
+  color: #f2a08d;
 }
 
 [data-theme="dark"] .dismiss-status-button:hover {

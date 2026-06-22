@@ -104,6 +104,7 @@ type BackupProfile = {
   schedule: BackupSchedule;
   schedulePaused?: boolean;
   reviewRequired?: boolean;
+  reviewReason?: "restored" | "google-drive-credentials";
   retention: RetentionPolicy;
   lastBackupStartedAt?: string;
   lastBackupCompletedAt?: string;
@@ -247,6 +248,18 @@ function normalizeGoogleDriveCredentials(value?: Partial<GoogleDriveCredentials>
   return {
     clientId: String(value?.clientId ?? "").trim(),
     clientSecret: String(value?.clientSecret ?? "").trim()
+  };
+}
+
+type GoogleDriveCredentialKey = keyof GoogleDriveCredentials;
+type GoogleDriveCredentialsObfuscated = Record<GoogleDriveCredentialKey, boolean>;
+
+const OBFUSCATED_GOOGLE_DRIVE_CREDENTIAL = "********";
+
+function obfuscatedGoogleDriveCredentials(credentials: GoogleDriveCredentials): GoogleDriveCredentialsObfuscated {
+  return {
+    clientId: Boolean(credentials.clientId),
+    clientSecret: Boolean(credentials.clientSecret)
   };
 }
 
@@ -677,7 +690,7 @@ function App() {
     checkedAt: new Date().toISOString()
   });
   const [view, setView] = useState<AppView>("home");
-  const [googleDriveCredentialsMasked, setGoogleDriveCredentialsMasked] = useState(false);
+  const [googleDriveCredentialsObfuscated, setGoogleDriveCredentialsObfuscated] = useState<GoogleDriveCredentialsObfuscated>(() => obfuscatedGoogleDriveCredentials(emptyGoogleDriveCredentials()));
   const [googleDriveCredentialsSaveStatus, setGoogleDriveCredentialsSaveStatus] = useState<GoogleDriveCredentialsSaveStatus>("idle");
   const [googleDriveCredentials, setGoogleDriveCredentials] = useState<GoogleDriveCredentials>(() => emptyGoogleDriveCredentials());
   const [viewHistory, setViewHistory] = useState<AppView[]>([]);
@@ -706,6 +719,8 @@ function App() {
   });
   const [defaultExcludes, setDefaultExcludes] = useState(defaultExcludeText);
   const [configMessage, setConfigMessage] = useState("");
+  const [configMessageIsSensitiveWarning, setConfigMessageIsSensitiveWarning] = useState(false);
+  const [configExportWarningPending, setConfigExportWarningPending] = useState<string | null>(null);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     const stored = localStorage.getItem("reststop-theme");
     return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
@@ -729,13 +744,13 @@ function App() {
         setDefaultExcludes(excludePatternsToText(settings.defaultExcludes));
         const credentials = normalizeGoogleDriveCredentials(settings.googleDriveCredentials);
         setGoogleDriveCredentials(credentials);
-        setGoogleDriveCredentialsMasked(Boolean(credentials.clientId || credentials.clientSecret));
+        setGoogleDriveCredentialsObfuscated(obfuscatedGoogleDriveCredentials(credentials));
         setGoogleDriveCredentialsSaveStatus("idle");
       })
       .catch(() => {
         setAutoUpdatesEnabledState(true);
         setDefaultExcludes(defaultExcludeText);
-        setGoogleDriveCredentialsMasked(false);
+        setGoogleDriveCredentialsObfuscated(obfuscatedGoogleDriveCredentials(emptyGoogleDriveCredentials()));
         setGoogleDriveCredentialsSaveStatus("idle");
         setGoogleDriveCredentials(emptyGoogleDriveCredentials());
       });
@@ -746,6 +761,17 @@ function App() {
     const timeout = window.setTimeout(() => setConfigMessage(""), CONFIG_MESSAGE_DISMISS_MS);
     return () => window.clearTimeout(timeout);
   }, [configMessage]);
+
+  function clearConfigMessage() {
+    setConfigMessage("");
+    setConfigMessageIsSensitiveWarning(false);
+    setConfigExportWarningPending(null);
+  }
+
+  function resetConfigExportWarning() {
+    setConfigMessageIsSensitiveWarning(false);
+    setConfigExportWarningPending(null);
+  }
 
   useEffect(() => {
     profilesRef.current = profiles;
@@ -918,28 +944,36 @@ function App() {
     try {
       await bridge.saveBackupDefaults({ defaultExcludes: normalizeExcludePatterns(value) });
     } catch (error) {
+      resetConfigExportWarning();
       setConfigMessage(error instanceof Error ? error.message : "Unable to save backup defaults.");
     }
   }
 
-  function handleGoogleDriveCredentialsChange(credentials: GoogleDriveCredentials) {
-    setGoogleDriveCredentials(credentials);
-    setGoogleDriveCredentialsMasked(false);
+  function handleGoogleDriveCredentialsChange(key: GoogleDriveCredentialKey, value: string) {
+    const fieldIsObfuscated = googleDriveCredentialsObfuscated[key] && Boolean(googleDriveCredentials[key]);
+    if (fieldIsObfuscated && value) return;
+    if (fieldIsObfuscated) {
+      setGoogleDriveCredentialsObfuscated((current) => ({ ...current, [key]: false }));
+    }
+    setGoogleDriveCredentials((current) => ({ ...current, [key]: value }));
     setGoogleDriveCredentialsSaveStatus("idle");
   }
 
   async function handleGoogleDriveCredentialsSave() {
     setGoogleDriveCredentialsSaveStatus("saving");
-    setConfigMessage("");
+    clearConfigMessage();
     const normalized = normalizeGoogleDriveCredentials(googleDriveCredentials);
     setGoogleDriveCredentials(normalized);
     try {
       const settings = await bridge.saveGoogleDriveCredentials(normalized);
       const savedCredentials = normalizeGoogleDriveCredentials(settings.googleDriveCredentials);
       setGoogleDriveCredentials(savedCredentials);
-      setGoogleDriveCredentialsMasked(Boolean(savedCredentials.clientId || savedCredentials.clientSecret));
+      setGoogleDriveCredentialsObfuscated(obfuscatedGoogleDriveCredentials(savedCredentials));
+      setProfiles(await bridge.getProfiles());
+      setVersionCounts({});
+      await refreshBackupStatus();
       setGoogleDriveCredentialsSaveStatus("saved");
-      setConfigMessage("Google Drive credentials saved. Existing Google Drive backups were updated when available.");
+      setConfigMessage("Google Drive credentials saved. Reconnect each Google Drive backup marked Action Needed.");
     } catch (error) {
       setGoogleDriveCredentialsSaveStatus("idle");
       setConfigMessage(error instanceof Error ? error.message : "Unable to save Google Drive credentials.");
@@ -947,17 +981,25 @@ function App() {
   }
 
   async function handleExportConfig() {
+    if (configExportWarningPending !== "global") {
+      setConfigExportWarningPending("global");
+      setConfigMessageIsSensitiveWarning(true);
+      setConfigMessage("Configuration downloads may contain sensitive information, including Google Drive OAuth client ID and secret. Click Download again to continue.");
+      return;
+    }
+
+    resetConfigExportWarning();
     setConfigMessage("");
     try {
       const result = await bridge.exportConfig();
-      if (!result.cancelled) setConfigMessage(`Config saved to ${result.path}. This file may contain your Google Drive OAuth client ID and secret.`);
+      if (!result.cancelled) setConfigMessage(`Config saved to ${result.path}.`);
     } catch (error) {
       setConfigMessage(error instanceof Error ? error.message : "Unable to save the config file.");
     }
   }
 
   async function handleRestoreConfig() {
-    setConfigMessage("");
+    clearConfigMessage();
     try {
       const result = await bridge.restoreConfig();
       if (result.cancelled) return;
@@ -966,7 +1008,7 @@ function App() {
       setVersionCounts({});
       const restoredCredentials = normalizeGoogleDriveCredentials(result.settings?.googleDriveCredentials);
       setGoogleDriveCredentials(restoredCredentials);
-      setGoogleDriveCredentialsMasked(Boolean(restoredCredentials.clientId || restoredCredentials.clientSecret));
+      setGoogleDriveCredentialsObfuscated(obfuscatedGoogleDriveCredentials(restoredCredentials));
       setGoogleDriveCredentialsSaveStatus("idle");
       setExpandedProfileId(null);
       setAutoUpdatesEnabledState(result.settings?.autoUpdatesEnabled !== false);
@@ -983,17 +1025,26 @@ function App() {
   }
 
   async function handleExportBackupConfig(profile: BackupProfile) {
+    const exportWarningKey = `backup:${profile.id}`;
+    if (configExportWarningPending !== exportWarningKey) {
+      setConfigExportWarningPending(exportWarningKey);
+      setConfigMessageIsSensitiveWarning(true);
+      setConfigMessage("Backup configuration downloads may contain sensitive information, including Google Drive OAuth client ID and secret. Click Download again to continue.");
+      return;
+    }
+
+    resetConfigExportWarning();
     setConfigMessage("");
     try {
       const result = await bridge.exportBackupConfig(profile.id);
-      if (!result.cancelled) setConfigMessage(`Backup config saved to ${result.path}. Exported config files may contain your Google Drive OAuth client ID and secret.`);
+      if (!result.cancelled) setConfigMessage(`Backup config saved to ${result.path}.`);
     } catch (error) {
       setConfigMessage(error instanceof Error ? error.message : "Unable to save this backup config.");
     }
   }
 
   async function handleLoadBackupConfig() {
-    setConfigMessage("");
+    clearConfigMessage();
     try {
       const result = await bridge.loadBackupConfig();
       if (result.cancelled) return false;
@@ -1112,6 +1163,7 @@ function App() {
         await refreshBackupStatus();
         return;
       }
+      resetConfigExportWarning();
       setConfigMessage("All restored backup credentials have been saved.");
     }
     navigateHome();
@@ -1404,10 +1456,11 @@ function App() {
                 updateStatus={updateStatus}
                 defaultExcludes={defaultExcludes}
                 googleDriveCredentials={googleDriveCredentials}
-                googleDriveCredentialsMasked={googleDriveCredentialsMasked}
+                googleDriveCredentialsObfuscated={googleDriveCredentialsObfuscated}
                 googleDriveCredentialsSaveStatus={googleDriveCredentialsSaveStatus}
                 configMessage={configMessage}
-                onDismissConfigMessage={() => setConfigMessage("")}
+                configMessageIsSensitiveWarning={configMessageIsSensitiveWarning}
+                onDismissConfigMessage={clearConfigMessage}
                 onCheckRestic={runResticCheck}
                 onCheckRclone={runRcloneCheck}
                 onThemeChange={setThemeMode}
@@ -1447,7 +1500,7 @@ function App() {
                   runs={restoreRuns}
                   onDismiss={(runId) => setRestoreRuns((current) => current.filter((run) => run.id !== runId))}
                 />
-                {configMessage ? <DismissibleSetupStatus message={configMessage} onDismiss={() => setConfigMessage("")} /> : null}
+                {configMessage ? <DismissibleSetupStatus message={configMessage} tone={configMessageIsSensitiveWarning ? "error" : "default"} onDismiss={clearConfigMessage} /> : null}
                 {profiles.length === 0 ? (
                   <EmptyState onCreate={openCreateBackup} onRestore={() => navigateTo("restore")} />
                 ) : (
@@ -1728,9 +1781,11 @@ function GoogleDriveCredentialsHelp() {
   );
 }
 
-function DismissibleSetupStatus({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+function DismissibleSetupStatus({ message, onDismiss, tone = "default" }: { message: string; onDismiss: () => void; tone?: "default" | "error" }) {
+  const className = `setup-status dismissible-setup-status${tone === "error" ? " error" : ""}`;
+
   return (
-    <div className="setup-status dismissible-setup-status" role="status">
+    <div className={className} role="status">
       <span>{message}</span>
       <button className="dismiss-status-button" type="button" aria-label="Dismiss message" onClick={onDismiss}>
         <FontAwesomeIcon icon={faXmark} />
@@ -1750,9 +1805,10 @@ function SettingsView({
   updateStatus,
   defaultExcludes,
   googleDriveCredentials,
-  googleDriveCredentialsMasked,
+  googleDriveCredentialsObfuscated,
   googleDriveCredentialsSaveStatus,
   configMessage,
+  configMessageIsSensitiveWarning,
   onCheckRestic,
   onCheckRclone,
   onThemeChange,
@@ -1776,15 +1832,16 @@ function SettingsView({
   defaultExcludes: string;
   googleDriveCredentials: GoogleDriveCredentials;
   configMessage: string;
+  configMessageIsSensitiveWarning: boolean;
   onCheckRestic: () => void;
-  googleDriveCredentialsMasked: boolean;
+  googleDriveCredentialsObfuscated: GoogleDriveCredentialsObfuscated;
   googleDriveCredentialsSaveStatus: GoogleDriveCredentialsSaveStatus;
   onCheckRclone: () => void;
   onThemeChange: (mode: ThemeMode) => void;
   onAutoUpdatesChange: (enabled: boolean) => void;
   onCheckUpdates: () => void;
   onDefaultExcludesChange: (value: string) => void;
-  onGoogleDriveCredentialsChange: (credentials: GoogleDriveCredentials) => void;
+  onGoogleDriveCredentialsChange: (key: GoogleDriveCredentialKey, value: string) => void;
   onSaveGoogleDriveCredentials: () => void;
   onDismissConfigMessage: () => void;
   onExportConfig: () => void;
@@ -1792,6 +1849,8 @@ function SettingsView({
 }) {
   const updateIsChecking = updateChecking || updateStatus.status === "checking";
   const googleDriveCredentialsSaving = googleDriveCredentialsSaveStatus === "saving";
+  const googleDriveClientIdObfuscated = googleDriveCredentialsObfuscated.clientId && Boolean(googleDriveCredentials.clientId);
+  const googleDriveClientSecretObfuscated = googleDriveCredentialsObfuscated.clientSecret && Boolean(googleDriveCredentials.clientSecret);
   const googleDriveCredentialsSaved = googleDriveCredentialsSaveStatus === "saved";
 
   return (
@@ -1831,20 +1890,22 @@ function SettingsView({
               <span>Google Drive OAuth Client ID</span>
               <input
                 className="text-input"
-                type={googleDriveCredentialsMasked ? "password" : "text"}
-                value={googleDriveCredentials.clientId}
-                onChange={(event) => onGoogleDriveCredentialsChange({ ...googleDriveCredentials, clientId: event.target.value })}
-                placeholder="Optional"
+                type={googleDriveClientIdObfuscated ? "password" : "text"}
+                value={googleDriveClientIdObfuscated ? OBFUSCATED_GOOGLE_DRIVE_CREDENTIAL : googleDriveCredentials.clientId}
+                onChange={(event) => onGoogleDriveCredentialsChange("clientId", event.target.value)}
+                placeholder={googleDriveClientIdObfuscated ? "Delete to replace" : "Optional"}
+                autoComplete="off"
               />
             </label>
             <label className="google-drive-credential-field">
               <span>Google Drive OAuth Client Secret</span>
               <input
                 className="text-input"
-                type={googleDriveCredentialsMasked ? "password" : "text"}
-                value={googleDriveCredentials.clientSecret}
-                onChange={(event) => onGoogleDriveCredentialsChange({ ...googleDriveCredentials, clientSecret: event.target.value })}
-                placeholder="Optional"
+                type={googleDriveClientSecretObfuscated ? "password" : "text"}
+                value={googleDriveClientSecretObfuscated ? OBFUSCATED_GOOGLE_DRIVE_CREDENTIAL : googleDriveCredentials.clientSecret}
+                onChange={(event) => onGoogleDriveCredentialsChange("clientSecret", event.target.value)}
+                placeholder={googleDriveClientSecretObfuscated ? "Delete to replace" : "Optional"}
+                autoComplete="off"
               />
             </label>
           </div>
@@ -1890,7 +1951,7 @@ function SettingsView({
             </div>
           </div>
         </div>
-        {configMessage ? <DismissibleSetupStatus message={configMessage} onDismiss={onDismissConfigMessage} /> : null}
+        {configMessage ? <DismissibleSetupStatus message={configMessage} tone={configMessageIsSensitiveWarning ? "error" : "default"} onDismiss={onDismissConfigMessage} /> : null}
       </section>
 
       <section className="settings-section backup-defaults-section">
